@@ -1,26 +1,25 @@
-from pathlib import Path
-from typing import Dict, List, Optional, Literal, Set, Tuple
-
 import logging
-import numpy as np
 import time
-import torch
-import h5py
-
 from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Literal, Optional, Set, Tuple
+
+import h5py
+import numpy as np
+import torch
 from lightning.pytorch import LightningDataModule
-from torch.utils.data import Dataset, ConcatDataset, DataLoader
+from torch.utils.data import ConcatDataset, DataLoader, Dataset
 from tqdm import tqdm
 
+from ..dataset.perturbation_dataset import PerturbationDataset
+from ..mapping_strategies import BatchMappingStrategy, RandomMappingStrategy
 from ..utils.data_utils import (
+    GlobalH5MetadataCache,
     generate_onehot_map,
     safe_decode_array,
-    GlobalH5MetadataCache,
 )
-from ..dataset.perturbation_dataset import PerturbationDataset
 from .samplers import PerturbationBatchSampler
 from .tasks import TaskSpec, TaskType
-from ..mapping_strategies import RandomMappingStrategy, BatchMappingStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +253,8 @@ class PerturbationDataModule(LightningDataModule):
                 try:
                     ct_code = np.where(cache.cell_type_categories == ct)[0][0]
                     mask = cache.cell_type_codes == ct_code
+
+                # TODO: Identify exact exception (probably IndexError)
                 except:
                     # Skip cell type if not found in this file
                     continue
