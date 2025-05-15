@@ -1,0 +1,5 @@
+[lint]
+select = ["E", "F", "ERA"]
+
+[lint.pycodestyle]
+max-line-length = 120
