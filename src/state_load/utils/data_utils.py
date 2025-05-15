@@ -1,16 +1,16 @@
+import logging
 import warnings
 
-warnings.filterwarnings("ignore")
-
-import h5py
-import torch
-import numpy as np
 import anndata
-import logging
+import h5py
+import numpy as np
+import torch
 
 from .singleton import Singleton
 
 log = logging.getLogger(__name__)
+
+warnings.filterwarnings("ignore")
 
 
 class H5MetadataCache:

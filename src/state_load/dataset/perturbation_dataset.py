@@ -1,12 +1,14 @@
+import logging
+from pathlib import Path
 from typing import Dict, List, Optional, Union
-import torch
-from torch.utils.data import Dataset, Subset
-from ..utils.data_utils import GlobalH5MetadataCache
+
 import h5py
 import numpy as np
-from pathlib import Path
-import logging
+import torch
+from torch.utils.data import Dataset, Subset
+
 from ..mapping_strategies import BaseMappingStrategy
+from ..utils.data_utils import GlobalH5MetadataCache
 
 logger = logging.getLogger(__name__)
 

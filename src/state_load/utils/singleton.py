@@ -1,5 +1,3 @@
-# singleton.py
-
 import logging
 
 """

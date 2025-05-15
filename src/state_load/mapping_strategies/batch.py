@@ -1,5 +1,6 @@
-import numpy as np
 import logging
+
+import numpy as np
 
 from .mapping_strategies import BaseMappingStrategy
 

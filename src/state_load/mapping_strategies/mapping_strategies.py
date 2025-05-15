@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple
+
 import numpy as np
 import torch
-import logging
 
 logger = logging.getLogger(__name__)
 
