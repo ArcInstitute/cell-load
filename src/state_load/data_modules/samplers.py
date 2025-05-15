@@ -1,5 +1,4 @@
 import numpy as np
-import torch
 from ..dataset.perturbation_dataset import PerturbationDataset
 from ..utils.data_utils import H5MetadataCache
 from typing import List, Iterator

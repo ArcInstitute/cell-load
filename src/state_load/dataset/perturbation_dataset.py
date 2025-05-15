@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Union, Literal
+from typing import Dict, List, Optional, Union
 import torch
 from torch.utils.data import Dataset, Subset
 from ..utils.data_utils import GlobalH5MetadataCache

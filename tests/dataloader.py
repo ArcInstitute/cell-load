@@ -1,4 +1,5 @@
-import sys, os
+import sys
+import os
 
 # insert the src directory at front of PYTHONPATH
 sys.path.insert(
