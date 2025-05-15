@@ -1,10 +1,12 @@
-import numpy as np
-from ..dataset.perturbation_dataset import PerturbationDataset
-from ..utils.data_utils import H5MetadataCache
-from typing import List, Iterator
-from torch.utils.data import Sampler
 import logging
 import time
+from typing import Iterator, List
+
+import numpy as np
+from torch.utils.data import Sampler
+
+from ..dataset.perturbation_dataset import PerturbationDataset
+from ..utils.data_utils import H5MetadataCache
 
 logger = logging.getLogger(__name__)
 
