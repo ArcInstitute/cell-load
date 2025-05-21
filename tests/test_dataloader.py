@@ -6,10 +6,10 @@ import pandas as pd
 import pytest
 import torch
 
-from state_load.data_modules.samplers import PerturbationBatchSampler
-from state_load.data_modules.tasks import TaskSpec, TaskType
-from state_load.utils.data_utils import GlobalH5MetadataCache, H5MetadataCache
-from state_load.utils.modules import get_datamodule
+from vc_load.data_modules.samplers import PerturbationBatchSampler
+from vc_load.data_modules.tasks import TaskSpec, TaskType
+from vc_load.utils.data_utils import GlobalH5MetadataCache, H5MetadataCache
+from vc_load.utils.modules import get_datamodule
 
 
 @pytest.fixture(scope="session")
