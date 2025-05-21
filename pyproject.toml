@@ -1,6 +1,6 @@
 [project]
 name = "vc-load"
-version = "0.1.12"
+version = "0.2.0"
 description = "Dataloaders for training models on huge single-cell datasets"
 readme = "README.md"
 authors = [
@@ -9,11 +9,7 @@ authors = [
     { name = "Noam Teyssier", email = "noam.teyssier@arcinsistute.org" },
 ]
 requires-python = ">=3.10,<3.13"
-dependencies = [
-    "torch>=1.13.0",        # install PyTorch
-    "anndata>=0.9.1",       # install AnnData
-    "lightning>=2.0.0",     # install Lightning
-]
+dependencies = ["torch>=1.13.0", "anndata>=0.9.1", "lightning>=2.0.0"]
 
 [build-system]
 requires = ["hatchling"]
