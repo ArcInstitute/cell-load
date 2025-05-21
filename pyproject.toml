@@ -1,5 +1,5 @@
 [project]
-name = "state-load"
+name = "vc-load"
 version = "0.1.12"
 description = "Dataloaders for training models on huge single-cell datasets"
 readme = "README.md"

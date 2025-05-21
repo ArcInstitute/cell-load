@@ -1,4 +1,4 @@
-# state-load
+# vc-load
 
 > Dataloaders for state-sets models
 
@@ -8,8 +8,8 @@ Distributed via [`uv`](https://docs.astral.sh/uv).
 
 ```bash
 # Clone repo
-git clone github.com:arcinstitute/state-load
-cd state-load
+git clone github.com:arcinstitute/vc-load
+cd vc-load
 
 # Initialize venv
 uv venv
