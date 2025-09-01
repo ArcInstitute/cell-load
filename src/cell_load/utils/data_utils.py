@@ -282,8 +282,7 @@ def is_on_target_knockdown(
         return False
 
     if target_gene not in adata.var_names:
-        print(f"Gene {target_gene!r} not found in `adata.var_names`.")
-        return 1
+        raise KeyError(f"Gene {target_gene!r} not found in `adata.var_names`.")
 
     gene_idx = adata.var_names.get_loc(target_gene)
     X = adata.layers[layer] if layer is not None else adata.X
@@ -414,7 +413,9 @@ def filter_on_target_knockdown(
     return adata_[keep_mask]
 
 
-def set_var_index_to_col(adata: anndata.AnnData, col: str = "col", copy=True) -> None:
+def set_var_index_to_col(
+    adata: anndata.AnnData, col: str = "col", copy: bool = True
+) -> anndata.AnnData:
     """
     Set `adata.var` index to the values in the specified column, allowing non-unique indices.
 
@@ -430,6 +431,9 @@ def set_var_index_to_col(adata: anndata.AnnData, col: str = "col", copy=True) ->
     KeyError
         If the specified column does not exist in `adata.var`.
     """
+    if copy:
+        adata = adata.copy()
+
     if col not in adata.var.columns:
         raise KeyError(f"Column {col!r} not found in adata.var.")
 

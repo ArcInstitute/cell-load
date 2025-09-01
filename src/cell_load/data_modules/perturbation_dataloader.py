@@ -64,7 +64,7 @@ class PerturbationDataModule(LightningDataModule):
             num_workers: Num workers for PyTorch DataLoader
             few_shot_percent: Fraction of data to use for few-shot tasks
             random_seed: For reproducible splits & sampling
-            embed_key: Embedding key or matrix in the H5 file to use for feauturizing cells
+            embed_key: Embedding key or matrix in the H5 file to use for featurizing cells
             output_space: The output space for model predictions (gene or latent, which uses embed_key)
             basal_mapping_strategy: One of {"batch","random","nearest","ot"}
             n_basal_samples: Number of control cells to sample per perturbed cell

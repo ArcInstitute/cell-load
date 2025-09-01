@@ -488,8 +488,8 @@ class PerturbationDataset(Dataset):
         if has_ctrl_cell_counts:
             ctrl_cell_counts = torch.stack(ctrl_cell_counts_list)
 
-            is_discrete = suspected_discrete_torch(pert_cell_counts)
-            is_log = suspected_log_torch(pert_cell_counts)
+            is_discrete = suspected_discrete_torch(ctrl_cell_counts)
+            is_log = suspected_log_torch(ctrl_cell_counts)
             already_logged = (not is_discrete) and is_log
             batch_dict["ctrl_cell_counts"] = ctrl_cell_counts
 
