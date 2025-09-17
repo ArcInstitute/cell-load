@@ -25,6 +25,13 @@ class ExperimentConfig:
     # Fewshot perturbation assignments (dataset.celltype -> {split: [perts]})
     fewshot: dict[str, dict[str, list[str]]]
 
+    # Path to h5ad CSV summary file for gene/protein embedding mapping
+    h5ad_csv_path: str = ""
+
+    # Thresholds for raw count heuristics
+    RAW_COUNT_HEURISTIC_THRESHOLD: int = 35
+    EXPONENTIATED_UMIS_LIMIT: int = 5_000_000
+
     @classmethod
     def from_toml(cls, toml_path: str) -> "ExperimentConfig":
         """Load configuration from TOML file."""
@@ -36,6 +43,11 @@ class ExperimentConfig:
             training=config.get("training", {}),
             zeroshot=config.get("zeroshot", {}),
             fewshot=config.get("fewshot", {}),
+            h5ad_csv_path=config.get("h5ad_csv_path", ""),
+            RAW_COUNT_HEURISTIC_THRESHOLD=config.get(
+                "RAW_COUNT_HEURISTIC_THRESHOLD", 1000
+            ),
+            EXPONENTIATED_UMIS_LIMIT=config.get("EXPONENTIATED_UMIS_LIMIT", 1000000),
         )
 
     def get_all_datasets(self) -> Set[str]:
