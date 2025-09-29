@@ -182,6 +182,141 @@ def test_fewshot_perturbation_splitting(synthetic_data):
         toml_path.unlink()
 
 
+def test_fewshot_fractional_split(synthetic_data):
+    """Test that fractional fewshot assignments split cells per perturbation."""
+    root, cell_types = synthetic_data
+    fs_ct = cell_types[1]  # CT1
+
+    config = {
+        "datasets": {"dataset1": "placeholder"},
+        "training": {"dataset1": "train"},
+        "fewshot": {
+            f"dataset1.{fs_ct}": {
+                "val": 0.6,
+                "test": 0.2,
+            }
+        },
+    }
+
+    toml_path = create_toml_config(root, config)
+
+    try:
+        dm = make_datamodule(
+            toml_path,
+            embed_key="X_hvg",
+            batch_size=16,
+            control_pert="P0",
+        )
+        dm.setup()
+
+        def count_cells(datasets, target_ct):
+            counts: dict[str, int] = {}
+            for subset in datasets:
+                ds = subset.dataset
+                for idx in subset.indices:
+                    if ds.get_cell_type(idx) != target_ct:
+                        continue
+                    pert_name = ds.get_perturbation_name(idx)
+                    if pert_name == "P0":
+                        continue
+                    counts[pert_name] = counts.get(pert_name, 0) + 1
+            return counts
+
+        val_counts = count_cells(dm.val_datasets, fs_ct)
+        test_counts = count_cells(dm.test_datasets, fs_ct)
+        train_counts = count_cells(dm.train_datasets, fs_ct)
+
+        expected_val = 60
+        expected_test = 20
+        expected_train = 20
+
+        for pert in [f"P{i}" for i in range(1, 10)]:
+            assert val_counts.get(pert, 0) == expected_val, (
+                f"{pert} expected {expected_val} val cells, got {val_counts.get(pert, 0)}"
+            )
+            assert test_counts.get(pert, 0) == expected_test, (
+                f"{pert} expected {expected_test} test cells, got {test_counts.get(pert, 0)}"
+            )
+            assert train_counts.get(pert, 0) == expected_train, (
+                f"{pert} expected {expected_train} train cells, got {train_counts.get(pert, 0)}"
+            )
+
+    finally:
+        toml_path.unlink()
+
+
+def test_fewshot_fraction_with_test_list(synthetic_data):
+    """Test numeric val split honors explicit test perturbation holdouts."""
+    root, cell_types = synthetic_data
+    fs_ct = cell_types[1]  # CT1
+
+    config = {
+        "datasets": {"dataset1": "placeholder"},
+        "training": {"dataset1": "train"},
+        "fewshot": {
+            f"dataset1.{fs_ct}": {
+                "val": 0.5,
+                "test": ["P1", "P2"],
+            }
+        },
+    }
+
+    toml_path = create_toml_config(root, config)
+
+    try:
+        dm = make_datamodule(
+            toml_path,
+            embed_key="X_hvg",
+            batch_size=16,
+            control_pert="P0",
+        )
+        dm.setup()
+
+        def count_cells(datasets, target_ct):
+            counts: dict[str, int] = {}
+            for subset in datasets:
+                ds = subset.dataset
+                for idx in subset.indices:
+                    if ds.get_cell_type(idx) != target_ct:
+                        continue
+                    pert_name = ds.get_perturbation_name(idx)
+                    if pert_name == "P0":
+                        continue
+                    counts[pert_name] = counts.get(pert_name, 0) + 1
+            return counts
+
+        val_counts = count_cells(dm.val_datasets, fs_ct)
+        test_counts = count_cells(dm.test_datasets, fs_ct)
+        train_counts = count_cells(dm.train_datasets, fs_ct)
+
+        # Explicit test perturbations should not leak elsewhere
+        for pert in ["P1", "P2"]:
+            assert val_counts.get(pert, 0) == 0, (
+                f"{pert} should not be sampled into val, got {val_counts.get(pert, 0)}"
+            )
+            assert train_counts.get(pert, 0) == 0, (
+                f"{pert} should not remain in train, got {train_counts.get(pert, 0)}"
+            )
+            assert test_counts.get(pert, 0) == 100, (
+                f"{pert} should be fully held out in test, got {test_counts.get(pert, 0)}"
+            )
+
+        # Remaining perturbations should follow the validation fraction
+        for pert in [f"P{i}" for i in range(3, 10)]:
+            assert val_counts.get(pert, 0) == 50, (
+                f"{pert} expected 50 val cells, got {val_counts.get(pert, 0)}"
+            )
+            assert test_counts.get(pert, 0) == 0, (
+                f"{pert} expected 0 test cells, got {test_counts.get(pert, 0)}"
+            )
+            assert train_counts.get(pert, 0) == 50, (
+                f"{pert} expected 50 train cells, got {train_counts.get(pert, 0)}"
+            )
+
+    finally:
+        toml_path.unlink()
+
+
 def test_training_dataset_behavior(synthetic_data):
     """Test that training datasets include all non-overridden cell types."""
     root, cell_types = synthetic_data

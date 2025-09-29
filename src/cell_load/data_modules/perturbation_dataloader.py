@@ -391,7 +391,7 @@ class PerturbationDataModule(LightningDataModule):
             num_workers=self.num_workers,
             collate_fn=collate_fn,
             pin_memory=True,
-            prefetch_factor=4 if not test and self.num_workers > 0 else None,
+            prefetch_factor=1 if not test and self.num_workers > 0 else None,
         )
 
     def _setup_global_maps(self):
@@ -495,6 +495,8 @@ class PerturbationDataModule(LightningDataModule):
         Uses H5MetadataCache for faster metadata access.
         """
 
+        overall_counts = {"train": 0, "val": 0, "test": 0}
+
         for dataset_name in self.config.get_all_datasets():
             dataset_path = Path(self.config.datasets[dataset_name])
             files = self._find_dataset_files(dataset_path)
@@ -509,10 +511,11 @@ class PerturbationDataModule(LightningDataModule):
             logger.info(f"  - Zeroshot cell types: {list(zeroshot_celltypes.keys())}")
             logger.info(f"  - Fewshot cell types: {list(fewshot_celltypes.keys())}")
 
+            progress_bar = tqdm(
+                list(files.items()), desc=f"Processing {dataset_name}", leave=True
+            )
             # Process each file in the dataset
-            for fname, fpath in tqdm(
-                list(files.items()), desc=f"Processing {dataset_name}"
-            ):
+            for fname, fpath in progress_bar:
                 # Create metadata cache
                 cache = GlobalH5MetadataCache().get_cache(
                     str(fpath),
@@ -559,11 +562,25 @@ class PerturbationDataModule(LightningDataModule):
                     val_sum += counts["val"]
                     test_sum += counts["test"]
 
-                tqdm.write(
-                    f"Processed {fname}: {train_sum} train, {val_sum} val, {test_sum} test"
+                progress_bar.set_postfix_str(
+                    f"Processed {fname}: {train_sum} train, {val_sum} val, {test_sum} test",
+                    refresh=False,
                 )
 
-            logger.info("\n")
+                overall_counts["train"] += train_sum
+                overall_counts["val"] += val_sum
+                overall_counts["test"] += test_sum
+
+            progress_bar.set_postfix_str("")
+            progress_bar.close()
+            logger.info("")
+
+        logger.info(
+            "Overall cells -> train: %d, val: %d, test: %d",
+            overall_counts["train"],
+            overall_counts["val"],
+            overall_counts["test"],
+        )
 
     def _split_fewshot_celltype(
         self,
@@ -571,39 +588,117 @@ class PerturbationDataModule(LightningDataModule):
         pert_indices: np.ndarray,
         ctrl_indices: np.ndarray,
         cache,
-        pert_config: dict[str, list[str]],
+        pert_config: dict[str, list[str] | float],
     ) -> dict[str, int]:
         """Split a fewshot cell type according to perturbation assignments."""
         counts = {"train": 0, "val": 0, "test": 0}
 
+        def _coerce_fraction(value, split_label: str) -> float | None:
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, (int, float)):
+                fraction = float(value)
+                if not 0.0 <= fraction <= 1.0:
+                    raise ValueError(
+                        f"Fewshot fraction for '{split_label}' must be between 0 and 1, got {fraction}"
+                    )
+                return fraction
+            return None
+
+        val_setting = pert_config.get("val", [])
+        test_setting = pert_config.get("test", [])
+
+        val_fraction = _coerce_fraction(val_setting, "val")
+        test_fraction = _coerce_fraction(test_setting, "test")
+
+        val_pert_names = (
+            set(val_setting)
+            if isinstance(val_setting, (list, tuple, set))
+            else set()
+        )
+        test_pert_names = (
+            set(test_setting)
+            if isinstance(test_setting, (list, tuple, set))
+            else set()
+        )
+
         # Get perturbation codes for this cell type
         pert_codes = cache.pert_codes[pert_indices]
 
-        # Create sets of perturbation codes for each split
-        val_pert_names = set(pert_config.get("val", []))
-        test_pert_names = set(pert_config.get("test", []))
-
-        val_pert_codes = set()
-        test_pert_codes = set()
+        # Create masks for explicit perturbation assignments
+        val_mask = np.zeros(len(pert_indices), dtype=bool)
+        test_mask = np.zeros(len(pert_indices), dtype=bool)
 
         for i, pert_name in enumerate(cache.pert_categories):
             if pert_name in val_pert_names:
-                val_pert_codes.add(i)
+                val_mask |= pert_codes == i
             if pert_name in test_pert_names:
-                test_pert_codes.add(i)
+                test_mask |= pert_codes == i
 
-        # Split perturbation indices by their codes
-        val_mask = np.isin(pert_codes, list(val_pert_codes))
-        test_mask = np.isin(pert_codes, list(test_pert_codes))
+        rng = np.random.default_rng(self.random_seed)
+        ctrl_indices_shuffled = rng.permutation(ctrl_indices)
+
+        # Precompute positions for each perturbation code
+        code_to_positions = {
+            code: np.where(pert_codes == code)[0]
+            for code in np.unique(pert_codes)
+        }
+
+        def compute_target(total_count: int, fraction: float | None) -> int:
+            if fraction is None or fraction <= 0.0:
+                return 0
+            target = int(np.floor(total_count * fraction))
+            if 0 < fraction <= 1.0 and target == 0:
+                target = 1
+            return min(target, total_count)
+
+        # Apply fractional assignments per perturbation where requested
+        for code, positions in code_to_positions.items():
+            total_count = len(positions)
+            if total_count == 0:
+                continue
+
+            # Validation split fractional selection
+            val_target = compute_target(total_count, val_fraction)
+            if val_target > 0:
+                current_val = int(val_mask[positions].sum())
+                remaining_val = val_target - current_val
+                if remaining_val > 0:
+                    available_positions = positions[
+                        ~(val_mask[positions] | test_mask[positions])
+                    ]
+                    if len(available_positions) > 0:
+                        remaining_val = min(remaining_val, len(available_positions))
+                        chosen = rng.choice(
+                            available_positions,
+                            size=remaining_val,
+                            replace=False,
+                        )
+                        val_mask[chosen] = True
+
+            # Test split fractional selection
+            test_target = compute_target(total_count, test_fraction)
+            if test_target > 0:
+                current_test = int(test_mask[positions].sum())
+                remaining_test = test_target - current_test
+                if remaining_test > 0:
+                    available_positions = positions[
+                        ~(test_mask[positions] | val_mask[positions])
+                    ]
+                    if len(available_positions) > 0:
+                        remaining_test = min(remaining_test, len(available_positions))
+                        chosen = rng.choice(
+                            available_positions,
+                            size=remaining_test,
+                            replace=False,
+                        )
+                        test_mask[chosen] = True
+
         train_mask = ~(val_mask | test_mask)
 
         val_pert_indices = pert_indices[val_mask]
         test_pert_indices = pert_indices[test_mask]
         train_pert_indices = pert_indices[train_mask]
-
-        # Split controls proportionally
-        rng = np.random.default_rng(self.random_seed)
-        ctrl_indices_shuffled = rng.permutation(ctrl_indices)
 
         n_val = len(val_pert_indices)
         n_test = len(test_pert_indices)
@@ -611,7 +706,6 @@ class PerturbationDataModule(LightningDataModule):
         total_pert = n_val + n_test + n_train
 
         if total_pert > 0:
-            # Create subsets
             if len(val_pert_indices) > 0:
                 subset = ds.to_subset_dataset(
                     "val", val_pert_indices, ctrl_indices_shuffled

@@ -670,7 +670,7 @@ class PerturbationDataset(Dataset):
                 )
             except KeyError:
                 # If no barcode information is available, generate generic ones
-                logger.warning(
+                logger.debug(
                     f"No cell barcode information found in {self.h5_path}. Generating generic barcodes."
                 )
                 return np.array(

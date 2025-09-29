@@ -22,8 +22,8 @@ class ExperimentConfig:
     # Zeroshot cell types (dataset.celltype -> split)
     zeroshot: dict[str, str]
 
-    # Fewshot perturbation assignments (dataset.celltype -> {split: [perts]})
-    fewshot: dict[str, dict[str, list[str]]]
+    # Fewshot perturbation assignments (dataset.celltype -> {split: [perts] or frac})
+    fewshot: dict[str, dict[str, list[str] | float]]
 
     @classmethod
     def from_toml(cls, toml_path: str) -> "ExperimentConfig":
@@ -63,14 +63,26 @@ class ExperimentConfig:
                 result[celltype] = split
         return result
 
-    def get_fewshot_celltypes(self, dataset: str) -> dict[str, dict[str, list[str]]]:
+    def get_fewshot_celltypes(
+        self, dataset: str
+    ) -> dict[str, dict[str, list[str] | float]]:
         """Get fewshot cell types for a dataset and their perturbation assignments."""
         result = {}
         for key, pert_config in self.fewshot.items():
             if key.startswith(f"{dataset}."):
                 celltype = key.split(".", 1)[1]
                 result[celltype] = pert_config
-                print(dataset, celltype, {k: len(v) for k, v in pert_config.items()})
+                summary = {}
+                for split, assignment in pert_config.items():
+                    if isinstance(assignment, (list, tuple, set)):
+                        summary[split] = f"list(len={len(assignment)})"
+                    elif isinstance(assignment, (int, float)) and not isinstance(
+                        assignment, bool
+                    ):
+                        summary[split] = f"fraction={float(assignment):g}"
+                    else:
+                        summary[split] = f"type={type(assignment).__name__}"
+                print(dataset, celltype, summary)
         return result
 
     def validate(self) -> None:
