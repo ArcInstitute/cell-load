@@ -601,7 +601,40 @@ class PerturbationDataModule(LightningDataModule):
         test_pert_indices = pert_indices[test_mask]
         train_pert_indices = pert_indices[train_mask]
 
-        # Split controls proportionally
+        # # Split controls proportionally
+        # rng = np.random.default_rng(self.random_seed)
+        # ctrl_indices_shuffled = rng.permutation(ctrl_indices)
+
+        # n_val = len(val_pert_indices)
+        # n_test = len(test_pert_indices)
+        # n_train = len(train_pert_indices)
+        # total_pert = n_val + n_test + n_train
+
+        # if total_pert > 0:
+        #     # Create subsets
+        #     if len(val_pert_indices) > 0:
+        #         subset = ds.to_subset_dataset(
+        #             "val", val_pert_indices, ctrl_indices_shuffled
+        #         )
+        #         self.val_datasets.append(subset)
+        #         counts["val"] = len(subset)
+
+        #     if len(test_pert_indices) > 0:
+        #         subset = ds.to_subset_dataset(
+        #             "test", test_pert_indices, ctrl_indices_shuffled
+        #         )
+        #         self.test_datasets.append(subset)
+        #         counts["test"] = len(subset)
+
+        #     subset = ds.to_subset_dataset(
+        #         "train", train_pert_indices, ctrl_indices_shuffled
+        #     )
+        #     self.train_datasets.append(subset)
+        #     counts["train"] = len(subset)
+
+        print("[INFO] Control split in progress...")
+
+        # Split controls disjointly (no reuse across splits)
         rng = np.random.default_rng(self.random_seed)
         ctrl_indices_shuffled = rng.permutation(ctrl_indices)
 
@@ -610,27 +643,47 @@ class PerturbationDataModule(LightningDataModule):
         n_train = len(train_pert_indices)
         total_pert = n_val + n_test + n_train
 
+        assert total_pert > 0, "At least one perturbation must exist across splits."
+
+        ## Split controls proportionally
+        n_ctrl = len(ctrl_indices_shuffled)
+        p_train = n_train / total_pert
+        p_val = n_val / total_pert
+        p_test = n_test / total_pert
+
+        ctrl_train_n = int(round(n_ctrl * p_train))
+        ctrl_val_n   = int(round(n_ctrl * p_val))
+        ctrl_test_n  = n_ctrl - ctrl_train_n - ctrl_val_n  
+
+
+        train_ctrl_indices = ctrl_indices_shuffled[:ctrl_train_n]
+        val_ctrl_indices   = ctrl_indices_shuffled[ctrl_train_n:ctrl_train_n + ctrl_val_n]
+        test_ctrl_indices  = ctrl_indices_shuffled[ctrl_train_n + ctrl_val_n:]
+
+        ## Assign different control set to each split
+
         if total_pert > 0:
             # Create subsets
             if len(val_pert_indices) > 0:
                 subset = ds.to_subset_dataset(
-                    "val", val_pert_indices, ctrl_indices_shuffled
+                    "val", val_pert_indices, val_ctrl_indices
                 )
                 self.val_datasets.append(subset)
                 counts["val"] = len(subset)
 
             if len(test_pert_indices) > 0:
                 subset = ds.to_subset_dataset(
-                    "test", test_pert_indices, ctrl_indices_shuffled
+                    "test", test_pert_indices, test_ctrl_indices
                 )
                 self.test_datasets.append(subset)
                 counts["test"] = len(subset)
 
             subset = ds.to_subset_dataset(
-                "train", train_pert_indices, ctrl_indices_shuffled
+                "train", train_pert_indices, train_ctrl_indices
             )
             self.train_datasets.append(subset)
             counts["train"] = len(subset)
+
 
         return counts
 
