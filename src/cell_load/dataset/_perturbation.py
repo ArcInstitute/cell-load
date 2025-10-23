@@ -198,6 +198,7 @@ class PerturbationDataset(Dataset):
             "batch": batch_onehot,
             "cell_type": cell_type,
             "cell_type_onehot": cell_type_onehot,
+            "dataset": self.name,
         }
 
         # Optionally include raw expressions for the perturbed cell, for training a decoder
@@ -430,6 +431,7 @@ class PerturbationDataset(Dataset):
         cell_type_onehot_list = [None] * batch_size
         batch_list = [None] * batch_size
         batch_name_list = [None] * batch_size
+        dataset_list = [None] * batch_size
 
         # Check if optional fields exist
         has_pert_cell_counts = "pert_cell_counts" in batch[0]
@@ -457,6 +459,7 @@ class PerturbationDataset(Dataset):
             cell_type_onehot_list[i] = item["cell_type_onehot"]
             batch_list[i] = item["batch"]
             batch_name_list[i] = item["batch_name"]
+            dataset_list[i] = item["dataset"]
 
             if has_pert_cell_counts:
                 pert_cell_counts_list[i] = item["pert_cell_counts"]
@@ -469,6 +472,14 @@ class PerturbationDataset(Dataset):
                 ctrl_cell_barcode_list[i] = item["ctrl_cell_barcode"]
 
         # Create batch dictionary
+        # Verify all samples in batch are from same dataset (they should be due to batch sampler)
+        unique_datasets = set(dataset_list)
+        if len(unique_datasets) > 1:
+            raise ValueError(
+                f"Batch contains samples from multiple datasets: {unique_datasets}. "
+                "This should not happen with proper batch sampling."
+            )
+        
         batch_dict = {
             "pert_cell_emb": torch.stack(pert_cell_emb_list),
             "ctrl_cell_emb": torch.stack(ctrl_cell_emb_list),
@@ -478,6 +489,7 @@ class PerturbationDataset(Dataset):
             "cell_type_onehot": torch.stack(cell_type_onehot_list),
             "batch": torch.stack(batch_list),
             "batch_name": batch_name_list,
+            "dataset": dataset_list[0],  # Single dataset name since all samples are from same dataset
         }
 
         if has_pert_cell_counts:
