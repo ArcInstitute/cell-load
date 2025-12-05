@@ -400,7 +400,11 @@ class PerturbationDataset(Dataset):
                 decoded = [_decode(x) for x in cats]
                 return [decoded[i] for i in codes]
             except KeyError:
-                fallback = self.h5_file["var/_index"][:]
+                    # Try var/_index, then var/feature as final fallbacks
+                    try:
+                        fallback = self.h5_file["var/_index"][:]
+                    except KeyError:
+                        fallback = self.h5_file["var/feature"][:]
                 if (
                     output_space == "gene"
                     and "highly_variable" in self.h5_file["/var"].keys()
