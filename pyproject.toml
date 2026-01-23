@@ -1,6 +1,6 @@
 [project]
 name = "cell-load"
-version = "0.8.6"
+version = "0.8.7"
 description = "Dataloaders for training models on huge single-cell datasets"
 readme = "README.md"
 authors = [

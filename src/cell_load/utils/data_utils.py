@@ -52,8 +52,10 @@ class H5MetadataCache:
             else:
                 self.batch_is_categorical = False
                 raw = batch_ds[:]
-                self.batch_categories = raw.astype(str)
-                self.batch_codes = raw.astype(np.int32)
+                # Get unique values and create proper categories/codes mapping
+                unique_values, inverse_indices = np.unique(raw, return_inverse=True)
+                self.batch_categories = unique_values.astype(str)
+                self.batch_codes = inverse_indices.astype(np.int32)
 
             # -- Codes for pert & cell type --
             self.pert_codes = obs[pert_col]["codes"][:].astype(np.int32)
