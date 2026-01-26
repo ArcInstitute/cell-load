@@ -31,11 +31,13 @@ class RandomMappingStrategy(BaseMappingStrategy):
         random_state=42,
         n_basal_samples=1,
         cache_perturbation_control_pairs=False,
+        use_consecutive_loading=False,
         **kwargs,
     ):
         super().__init__(name, random_state, n_basal_samples, **kwargs)
 
         self.cache_perturbation_control_pairs = cache_perturbation_control_pairs
+        self.use_consecutive_loading = use_consecutive_loading
 
         if self.cache_perturbation_control_pairs:
             logger.info(
@@ -43,6 +45,11 @@ class RandomMappingStrategy(BaseMappingStrategy):
             )
             logger.info(
                 f"Warning: If using n_basal_samples > 1, use the original behavior by setting cache_perturbation_control_pairs=False"
+            )
+        if self.use_consecutive_loading:
+            logger.info(
+                "RandomMappingStrategy initialized with use_consecutive_loading=True; "
+                "control mappings will be assigned in file order."
             )
 
         # Map cell type -> list of control indices.
@@ -98,14 +105,15 @@ class RandomMappingStrategy(BaseMappingStrategy):
             else:
                 self.split_control_pool[split][ct].extend(ct_indices)
 
-        if self.cache_perturbation_control_pairs:
+        build_mapping = self.cache_perturbation_control_pairs or self.use_consecutive_loading
+        if build_mapping:
             logger.info(
                 f"Creating cached perturbation-control mapping for split '{split}' with {len(perturbed_indices)} perturbed cells and {len(control_indices)} control cells"
             )
 
         # Create a fixed mapping from perturbed_idx -> list of control indices
         # Only if caching is enabled
-        if self.cache_perturbation_control_pairs:
+        if build_mapping:
             pert_groups = {}
 
             # Group perturbed indices by cell type and perturbation name
@@ -129,20 +137,31 @@ class RandomMappingStrategy(BaseMappingStrategy):
                         self.split_control_mapping[split][pert_idx] = []
                     continue
 
-                # Shuffle control pool for random assignment
-                shuffled_pool = pool.copy()
-                self.rng.shuffle(shuffled_pool)
-
                 # Calculate total assignments needed for this cell type / perturbation
                 total_assignments_needed = len(pert_idxs_list) * self.n_basal_samples
+                if self.use_consecutive_loading:
+                    pool_arr = np.asarray(pool, dtype=np.int64)
+                    if pool_arr.size == 0:
+                        control_assignments = []
+                    else:
+                        repeats = int(
+                            np.ceil(total_assignments_needed / pool_arr.size)
+                        )
+                        control_assignments = np.tile(pool_arr, repeats)[
+                            :total_assignments_needed
+                        ].tolist()
+                else:
+                    # Shuffle control pool for random assignment
+                    shuffled_pool = pool.copy()
+                    self.rng.shuffle(shuffled_pool)
 
-                # Ensure we have enough controls for all assignments
-                assert len(shuffled_pool) >= total_assignments_needed, (
-                    f"Need {total_assignments_needed} controls for {cell_type} / {pert_name} but only have {len(shuffled_pool)}"
-                )
+                    # Ensure we have enough controls for all assignments
+                    assert len(shuffled_pool) >= total_assignments_needed, (
+                        f"Need {total_assignments_needed} controls for {cell_type} / {pert_name} but only have {len(shuffled_pool)}"
+                    )
 
-                # Assign control cells without replacement to this cell type / perturbation
-                control_assignments = shuffled_pool[:total_assignments_needed]
+                    # Assign control cells without replacement to this cell type / perturbation
+                    control_assignments = shuffled_pool[:total_assignments_needed]
 
                 # Assign control cells to each perturbed cell
                 for i, pert_idx in enumerate(pert_idxs_list):
@@ -166,7 +185,7 @@ class RandomMappingStrategy(BaseMappingStrategy):
         If False, samples new control cells each time (original behavior).
         """
 
-        if self.cache_perturbation_control_pairs:
+        if self.cache_perturbation_control_pairs or self.use_consecutive_loading:
             # Use cached mapping
             control_idxs = self.split_control_mapping[split][perturbed_idx]
             if len(control_idxs) == 0:
@@ -195,7 +214,7 @@ class RandomMappingStrategy(BaseMappingStrategy):
         If False, samples a new control cell each time (original behavior).
         """
 
-        if self.cache_perturbation_control_pairs:
+        if self.cache_perturbation_control_pairs or self.use_consecutive_loading:
             # Use cached mapping
             control_idxs = self.split_control_mapping[split][perturbed_idx]
             if len(control_idxs) == 0:

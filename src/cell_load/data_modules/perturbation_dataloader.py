@@ -54,6 +54,7 @@ class PerturbationDataModule(LightningDataModule):
         cache_perturbation_control_pairs: bool = False,
         drop_last: bool = False,
         additional_obs: list[str] | None = None,
+        use_consecutive_loading: bool = False,
         **kwargs,  # missing perturbation_features_file  and store_raw_basal for backwards compatibility
     ):
         """
@@ -75,6 +76,7 @@ class PerturbationDataModule(LightningDataModule):
             n_basal_samples: Number of control cells to sample per perturbed cell
             cache_perturbation_control_pairs: If True cache perturbation-control pairs at the start of training and reuse them.
             drop_last: Whether to drop the last sentence set if it is smaller than cell_sentence_len
+            use_consecutive_loading: Whether to form cell sets from consecutive indices for faster IO
         """
         super().__init__()
 
@@ -89,6 +91,7 @@ class PerturbationDataModule(LightningDataModule):
         self.random_seed = random_seed
         self.rng = np.random.default_rng(random_seed)
         self.drop_last = drop_last
+        self.use_consecutive_loading = use_consecutive_loading
 
         # H5 field names
         self.pert_col = pert_col
@@ -215,6 +218,7 @@ class PerturbationDataModule(LightningDataModule):
             "store_raw_basal": self.store_raw_basal,
             "barcode": self.barcode,
             "additional_obs": self.additional_obs,
+            "use_consecutive_loading": self.use_consecutive_loading,
         }
 
         torch.save(save_dict, filepath)
@@ -257,6 +261,7 @@ class PerturbationDataModule(LightningDataModule):
             "normalize_counts": save_dict.pop("normalize_counts", False),
             "store_raw_basal": save_dict.pop("store_raw_basal", False),
             "barcode": save_dict.pop("barcode", True),
+            "use_consecutive_loading": save_dict.pop("use_consecutive_loading", False),
         }
 
         # Create new instance with all the saved parameters
@@ -394,6 +399,7 @@ class PerturbationDataModule(LightningDataModule):
             cell_sentence_len=self.cell_sentence_len,
             test=test,
             use_batch=use_batch,
+            use_consecutive_loading=self.use_consecutive_loading,
         )
 
         return DataLoader(
@@ -502,6 +508,7 @@ class PerturbationDataModule(LightningDataModule):
         mapping_kwargs["cache_perturbation_control_pairs"] = (
             self.cache_perturbation_control_pairs
         )
+        mapping_kwargs["use_consecutive_loading"] = self.use_consecutive_loading
 
         return PerturbationDataset(
             name=dataset_name,
