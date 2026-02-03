@@ -104,9 +104,7 @@ class PerturbationDataset(Dataset):
                     f"downsample must be a float in (0, 1]; got {downsample!r}"
                 ) from exc
             if not (0.0 < downsample <= 1.0):
-                raise ValueError(
-                    f"downsample must be in (0, 1]; got {downsample!r}"
-                )
+                raise ValueError(f"downsample must be in (0, 1]; got {downsample!r}")
             self.downsample = downsample
         self.is_log1p = bool(is_log1p)
         self.additional_obs = self._validate_additional_obs(additional_obs)
@@ -256,7 +254,9 @@ class PerturbationDataset(Dataset):
         if additional_obs is None:
             return []
         if isinstance(additional_obs, (str, bytes, bytearray)):
-            raise TypeError("additional_obs must be a list of obs column names, not a string.")
+            raise TypeError(
+                "additional_obs must be a list of obs column names, not a string."
+            )
         obs_list = [str(item) for item in additional_obs]
         if len(set(obs_list)) != len(obs_list):
             raise ValueError("additional_obs contains duplicate column names.")
@@ -276,7 +276,9 @@ class PerturbationDataset(Dataset):
         }
         collision = reserved_keys & set(obs_list)
         if collision:
-            raise ValueError(f"additional_obs contains reserved keys: {sorted(collision)}")
+            raise ValueError(
+                f"additional_obs contains reserved keys: {sorted(collision)}"
+            )
         return obs_list
 
     def _fetch_obs_value(self, idx: int, key: str):
@@ -422,9 +424,7 @@ class PerturbationDataset(Dataset):
     @lru_cache(
         maxsize=10000
     )  # cache row indices/data separately for sparse downsampling
-    def _fetch_gene_expression_csr_row(
-        self, idx: int
-    ) -> tuple[np.ndarray, np.ndarray]:
+    def _fetch_gene_expression_csr_row(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
         indptr = self.h5_file["/X/indptr"]
         start_ptr = indptr[idx]
         end_ptr = indptr[idx + 1]
@@ -694,15 +694,26 @@ class PerturbationDataset(Dataset):
         }
         extra_keys = [key for key in batch[0].keys() if key not in base_keys]
         if extra_keys:
+
             def _collate_extra(values):
                 first = values[0]
                 if torch.is_tensor(first):
                     return torch.stack(values)
                 if isinstance(first, np.ndarray):
                     if first.shape == ():
-                        return torch.tensor([v.item() if isinstance(v, np.ndarray) else v for v in values])
+                        return torch.tensor(
+                            [
+                                v.item() if isinstance(v, np.ndarray) else v
+                                for v in values
+                            ]
+                        )
                     if first.dtype.kind in {"S", "U", "O"}:
-                        return [safe_decode_array(v).tolist() if isinstance(v, np.ndarray) else v for v in values]
+                        return [
+                            safe_decode_array(v).tolist()
+                            if isinstance(v, np.ndarray)
+                            else v
+                            for v in values
+                        ]
                     return torch.as_tensor(np.stack(values))
                 if isinstance(first, (np.generic, int, float, bool)):
                     return torch.tensor(
