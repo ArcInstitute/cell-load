@@ -46,6 +46,7 @@ class PerturbationDataset(Dataset):
         additional_obs: list[str] | None = None,
         downsample: float | None = None,
         is_log1p: bool = False,
+        cell_sentence_len: int | None = None,
         **kwargs,
     ):
         """
@@ -70,6 +71,7 @@ class PerturbationDataset(Dataset):
             additional_obs: Optional list of obs column names to include in each sample
             downsample: Fraction of counts to retain via binomial downsampling (only for output_space="all")
             is_log1p: Whether raw counts in X are log1p-transformed (affects downsampling)
+            cell_sentence_len: Optional sentence length for consecutive loading batches
             **kwargs: Additional options (e.g. output_space)
         """
         super().__init__()
@@ -107,6 +109,7 @@ class PerturbationDataset(Dataset):
                 raise ValueError(f"downsample must be in (0, 1]; got {downsample!r}")
             self.downsample = downsample
         self.is_log1p = bool(is_log1p)
+        self.cell_sentence_len = cell_sentence_len
         self.additional_obs = self._validate_additional_obs(additional_obs)
 
         # Load metadata cache and open file
@@ -266,20 +269,114 @@ class PerturbationDataset(Dataset):
         splits = [self._find_split_for_idx(int(i)) for i in file_indices]
 
         ctrl_indices = []
-        for file_idx, split in zip(file_indices, splits):
-            ctrl_idx = self.mapping_strategy.get_control_index(
-                self, split, int(file_idx)
-            )
-            if ctrl_idx is None:
-                raise ValueError(
-                    f"No control cells found for cell type '{self.get_cell_type(file_idx)}'"
+        missing_ctrl = []
+        sentence_len = self.cell_sentence_len
+        use_sentence_blocks = (
+            sentence_len is not None
+            and sentence_len > 0
+            and len(file_indices) % sentence_len == 0
+            and getattr(self.mapping_strategy, "use_consecutive_loading", False)
+            and hasattr(self.mapping_strategy, "_sample_consecutive_controls")
+            and hasattr(self.mapping_strategy, "split_control_pool")
+        )
+
+        if use_sentence_blocks:
+            for start in range(0, len(file_indices), sentence_len):
+                sentence_idx = file_indices[start : start + sentence_len]
+                split = splits[start]
+                cell_type = self.get_cell_type(sentence_idx[0])
+                pool = self.mapping_strategy.split_control_pool[split].get(
+                    cell_type, None
                 )
-            ctrl_indices.append(int(ctrl_idx))
+                if not pool:
+                    raise ValueError(
+                        f"No control cells found in RandomMappingStrategy for cell type '{cell_type}'"
+                    )
+                block = self.mapping_strategy._sample_consecutive_controls(
+                    pool, len(sentence_idx)
+                )
+                ctrl_indices.extend(block.tolist())
+                missing_ctrl.extend([False] * len(block))
+        else:
+            for file_idx, split in zip(file_indices, splits):
+                ctrl_idx = self.mapping_strategy.get_control_index(
+                    self, split, int(file_idx)
+                )
+                if ctrl_idx is None:
+                    ctrl_indices.append(-1)
+                    missing_ctrl.append(True)
+                else:
+                    ctrl_indices.append(int(ctrl_idx))
+                    missing_ctrl.append(False)
 
         ctrl_indices_arr = np.asarray(ctrl_indices, dtype=np.int64)
+        missing_ctrl_mask = np.asarray(missing_ctrl, dtype=bool)
 
-        pert_expr_batch = self._fetch_gene_expression_batch(file_indices)
-        ctrl_expr_batch = self._fetch_gene_expression_batch(ctrl_indices_arr)
+        if missing_ctrl_mask.any():
+            missing_pos = int(np.flatnonzero(missing_ctrl_mask)[0])
+            missing_file_idx = int(file_indices[missing_pos])
+            if not self.embed_key:
+                raise ValueError(
+                    f"No control cells found for cell type '{self.get_cell_type(missing_file_idx)}'"
+                )
+            if (
+                (self.store_raw_basal and self.output_space != "embedding")
+                or (self.barcode and self.cell_barcodes is not None)
+            ):
+                raise ValueError(
+                    f"No control cells found for cell type '{self.get_cell_type(missing_file_idx)}'"
+                )
+
+        if self.embed_key:
+            pert_expr_batch = self._fetch_obsm_expression_batch(
+                file_indices, self.embed_key
+            )
+            if missing_ctrl_mask.any():
+                ctrl_expr_batch = torch.zeros_like(pert_expr_batch)
+                valid_positions = np.flatnonzero(~missing_ctrl_mask)
+                if valid_positions.size:
+                    valid_ctrl_indices = ctrl_indices_arr[valid_positions]
+                    valid_positions_t = torch.from_numpy(
+                        valid_positions.astype(np.int64)
+                    )
+                    ctrl_expr_batch[valid_positions_t] = (
+                        self._fetch_obsm_expression_batch(
+                            valid_ctrl_indices, self.embed_key
+                        )
+                    )
+            else:
+                ctrl_expr_batch = self._fetch_obsm_expression_batch(
+                    ctrl_indices_arr, self.embed_key
+                )
+        else:
+            pert_expr_batch = self._fetch_gene_expression_batch(file_indices)
+            ctrl_expr_batch = self._fetch_gene_expression_batch(ctrl_indices_arr)
+
+        pert_counts_batch = None
+        ctrl_counts_batch = None
+        if self.store_raw_expression and self.output_space != "embedding":
+            if self.output_space == "gene":
+                pert_counts_batch = self._fetch_obsm_expression_batch(
+                    file_indices, "X_hvg"
+                )
+            elif self.output_space == "all":
+                if self.embed_key:
+                    pert_counts_batch = self._fetch_gene_expression_batch(file_indices)
+                else:
+                    pert_counts_batch = pert_expr_batch
+
+        if self.store_raw_basal and self.output_space != "embedding":
+            if self.output_space == "gene":
+                ctrl_counts_batch = self._fetch_obsm_expression_batch(
+                    ctrl_indices_arr, "X_hvg"
+                )
+            elif self.output_space == "all":
+                if self.embed_key:
+                    ctrl_counts_batch = self._fetch_gene_expression_batch(
+                        ctrl_indices_arr
+                    )
+                else:
+                    ctrl_counts_batch = ctrl_expr_batch
 
         samples = []
         for i, file_idx in enumerate(file_indices):
@@ -319,21 +416,11 @@ class PerturbationDataset(Dataset):
                 "cell_type_onehot": cell_type_onehot,
             }
 
-            if self.store_raw_expression and self.output_space != "embedding":
-                if self.output_space == "gene":
-                    sample["pert_cell_counts"] = self.fetch_obsm_expression(
-                        file_idx, "X_hvg"
-                    )
-                elif self.output_space == "all":
-                    sample["pert_cell_counts"] = pert_expr
+            if pert_counts_batch is not None:
+                sample["pert_cell_counts"] = pert_counts_batch[i]
 
-            if self.store_raw_basal and self.output_space != "embedding":
-                if self.output_space == "gene":
-                    sample["ctrl_cell_counts"] = self.fetch_obsm_expression(
-                        ctrl_idx, "X_hvg"
-                    )
-                elif self.output_space == "all":
-                    sample["ctrl_cell_counts"] = ctrl_expr
+            if ctrl_counts_batch is not None:
+                sample["ctrl_cell_counts"] = ctrl_counts_batch[i]
 
             if self.barcode and self.cell_barcodes is not None:
                 sample["pert_cell_barcode"] = self.cell_barcodes[file_idx]
@@ -348,15 +435,7 @@ class PerturbationDataset(Dataset):
         return samples
 
     def _use_batched_fetch(self) -> bool:
-        if not getattr(self.mapping_strategy, "use_consecutive_loading", False):
-            return False
-        if self.embed_key is not None:
-            return False
-        if self.output_space != "all":
-            return False
-        if self.downsample is not None and self.downsample < 1.0:
-            return False
-        return True
+        return bool(getattr(self.mapping_strategy, "use_consecutive_loading", False))
 
     def _validate_additional_obs(self, additional_obs: list[str] | None) -> list[str]:
         if additional_obs is None:
@@ -560,6 +639,25 @@ class PerturbationDataset(Dataset):
             sampled = np.log1p(sampled)
         return torch.tensor(sampled, dtype=torch.float32)
 
+    def _maybe_downsample_counts_array(self, counts: np.ndarray) -> np.ndarray:
+        if (
+            self.downsample is None
+            or self.downsample >= 1.0
+            or self.output_space != "all"
+        ):
+            return counts
+
+        if self.is_log1p:
+            counts_lin = np.expm1(counts)
+            counts_int = np.rint(counts_lin).astype(np.int64)
+        else:
+            counts_int = counts.astype(np.int64)
+        counts_int = np.maximum(counts_int, 0)
+        sampled = self.rng.binomial(counts_int, self.downsample)
+        if self.is_log1p:
+            sampled = np.log1p(sampled)
+        return sampled.astype(np.float32)
+
     def fetch_gene_expression(self, idx: int) -> torch.Tensor:
         """
         Fetch raw gene counts for a given cell index, applying optional downsampling.
@@ -591,6 +689,38 @@ class PerturbationDataset(Dataset):
         data = self._fetch_gene_expression_raw(idx)
         return self._maybe_downsample_counts(data)
 
+    def _fetch_dense_matrix_batch(
+        self, ds, indices: np.ndarray, n_cols: int
+    ) -> np.ndarray:
+        if indices.size == 0:
+            return np.empty((0, n_cols), dtype=np.float32)
+
+        order = np.argsort(indices)
+        sorted_rows = indices[order]
+        dense_sorted = np.zeros((len(sorted_rows), n_cols), dtype=np.float32)
+
+        run_start = 0
+        for i in range(1, len(sorted_rows)):
+            if sorted_rows[i] != sorted_rows[i - 1] + 1:
+                row_start = int(sorted_rows[run_start])
+                row_end = int(sorted_rows[i - 1])
+                block = np.asarray(ds[row_start : row_end + 1], dtype=np.float32)
+                if block.ndim == 1:
+                    block = block[:, None]
+                dense_sorted[run_start:i] = block
+                run_start = i
+
+        row_start = int(sorted_rows[run_start])
+        row_end = int(sorted_rows[-1])
+        block = np.asarray(ds[row_start : row_end + 1], dtype=np.float32)
+        if block.ndim == 1:
+            block = block[:, None]
+        dense_sorted[run_start:len(sorted_rows)] = block
+
+        inv_order = np.empty_like(order)
+        inv_order[order] = np.arange(len(order))
+        return dense_sorted[inv_order]
+
     def _fetch_gene_expression_batch(self, indices: np.ndarray) -> torch.Tensor:
         """
         Fetch raw gene counts for multiple indices at once (CSR fast path).
@@ -600,8 +730,11 @@ class PerturbationDataset(Dataset):
 
         attrs = dict(self.h5_file["X"].attrs)
         if attrs.get("encoding-type") != "csr_matrix":
-            row_data = self.h5_file["/X"][indices]
-            return torch.tensor(row_data, dtype=torch.float32)
+            dense = self._fetch_dense_matrix_batch(
+                self.h5_file["/X"], indices, self.n_genes
+            )
+            dense = self._maybe_downsample_counts_array(dense)
+            return torch.from_numpy(dense)
 
         indptr_ds = self.h5_file["/X/indptr"]
         data_ds = self.h5_file["/X/data"]
@@ -638,7 +771,18 @@ class PerturbationDataset(Dataset):
         inv_order = np.empty_like(order)
         inv_order[order] = np.arange(len(order))
         dense = dense_sorted[inv_order]
+        dense = self._maybe_downsample_counts_array(dense)
 
+        return torch.from_numpy(dense)
+
+    def _fetch_obsm_expression_batch(
+        self, indices: np.ndarray, key: str
+    ) -> torch.Tensor:
+        ds = self.h5_file[f"/obsm/{key}"]
+        n_cols = int(ds.shape[1]) if ds.ndim > 1 else 1
+        if indices.size == 0:
+            return torch.empty((0, n_cols), dtype=torch.float32)
+        dense = self._fetch_dense_matrix_batch(ds, indices, n_cols)
         return torch.from_numpy(dense)
 
     def _fill_dense_run(

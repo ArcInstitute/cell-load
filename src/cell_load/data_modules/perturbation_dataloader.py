@@ -535,6 +535,7 @@ class PerturbationDataModule(LightningDataModule):
             additional_obs=self.additional_obs,
             downsample=self.downsample,
             is_log1p=self.is_log1p,
+            cell_sentence_len=self.cell_sentence_len,
         )
 
     def _setup_datasets(self):
