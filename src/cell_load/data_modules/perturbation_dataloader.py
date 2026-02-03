@@ -45,6 +45,8 @@ class PerturbationDataModule(LightningDataModule):
         control_pert: str = "non-targeting",
         embed_key: Literal["X_hvg", "X_state"] | None = None,
         output_space: Literal["gene", "all", "embedding"] = "gene",
+        downsample: float | None = None,
+        is_log1p: bool = False,
         basal_mapping_strategy: Literal["batch", "random"] = "random",
         n_basal_samples: int = 1,
         should_yield_control_cells: bool = True,
@@ -67,6 +69,8 @@ class PerturbationDataModule(LightningDataModule):
             random_seed: For reproducible splits & sampling
             embed_key: Embedding key or matrix in the H5 file to use for feauturizing cells
             output_space: The output space for model predictions (gene, all genes, or embedding-only)
+            downsample: Fraction of counts to retain via binomial downsampling (only for output_space="all")
+            is_log1p: Whether raw counts in X are log1p-transformed (auto-set if uns/log1p is present)
             basal_mapping_strategy: One of {"batch","random","nearest","ot"}
             n_basal_samples: Number of control cells to sample per perturbed cell
             cache_perturbation_control_pairs: If True cache perturbation-control pairs at the start of training and reuse them.
@@ -97,6 +101,8 @@ class PerturbationDataModule(LightningDataModule):
             raise ValueError(
                 f"output_space must be one of 'gene', 'all', or 'embedding'; got {self.output_space!r}"
             )
+        self.downsample = downsample
+        self.is_log1p = is_log1p
 
         # Sampling and mapping
         self.n_basal_samples = n_basal_samples
@@ -194,6 +200,8 @@ class PerturbationDataModule(LightningDataModule):
             "control_pert": self.control_pert,
             "embed_key": self.embed_key,
             "output_space": self.output_space,
+            "downsample": self.downsample,
+            "is_log1p": self.is_log1p,
             "basal_mapping_strategy": self.basal_mapping_strategy,
             "n_basal_samples": self.n_basal_samples,
             "should_yield_control_cells": self.should_yield_control_cells,
@@ -405,6 +413,10 @@ class PerturbationDataModule(LightningDataModule):
         all_perts = set()
         all_batches = set()
         all_celltypes = set()
+        seen_log1p = False
+        seen_no_log1p = False
+        log1p_example = None
+        no_log1p_example = None
 
         for dataset_name in self.config.get_all_datasets():
             dataset_path = Path(self.config.datasets[dataset_name])
@@ -412,6 +424,17 @@ class PerturbationDataModule(LightningDataModule):
 
             for _fname, fpath in files.items():
                 with h5py.File(fpath, "r") as f:
+                    uns = f.get("uns")
+                    has_log1p = uns is not None and "log1p" in uns
+                    if has_log1p:
+                        seen_log1p = True
+                        if log1p_example is None:
+                            log1p_example = str(fpath)
+                    else:
+                        seen_no_log1p = True
+                        if no_log1p_example is None:
+                            no_log1p_example = str(fpath)
+
                     pert_arr = f[f"obs/{self.pert_col}/categories"][:]
                     perts = set(safe_decode_array(pert_arr))
                     all_perts.update(perts)
@@ -429,6 +452,18 @@ class PerturbationDataModule(LightningDataModule):
                         celltype_arr = f[f"obs/{self.cell_type_key}"][:]
                     celltypes = set(safe_decode_array(celltype_arr))
                     all_celltypes.update(celltypes)
+
+        if self.output_space == "all" and seen_log1p and seen_no_log1p:
+            raise ValueError(
+                "Inconsistent log1p metadata across datasets for output_space='all'. "
+                f"Example with uns/log1p: {log1p_example}. "
+                f"Example without uns/log1p: {no_log1p_example}."
+            )
+        if seen_log1p and not self.is_log1p:
+            self.is_log1p = True
+            logger.warning(
+                "Detected uns/log1p in at least one dataset; setting is_log1p=True."
+            )
 
         # Create one-hot maps
         if self.perturbation_features_file:
@@ -491,6 +526,8 @@ class PerturbationDataModule(LightningDataModule):
             store_raw_basal=self.store_raw_basal,
             barcode=self.barcode,
             additional_obs=self.additional_obs,
+            downsample=self.downsample,
+            is_log1p=self.is_log1p,
         )
 
     def _setup_datasets(self):

@@ -44,6 +44,8 @@ class PerturbationDataset(Dataset):
         store_raw_basal: bool = False,
         barcode: bool = False,
         additional_obs: list[str] | None = None,
+        downsample: float | None = None,
+        is_log1p: bool = False,
         **kwargs,
     ):
         """
@@ -66,6 +68,8 @@ class PerturbationDataset(Dataset):
             store_raw_basal: If True, include raw basal expression
             barcode: If True, include cell barcodes in output
             additional_obs: Optional list of obs column names to include in each sample
+            downsample: Fraction of counts to retain via binomial downsampling (only for output_space="all")
+            is_log1p: Whether raw counts in X are log1p-transformed (affects downsampling)
             **kwargs: Additional options (e.g. output_space)
         """
         super().__init__()
@@ -90,6 +94,21 @@ class PerturbationDataset(Dataset):
             raise ValueError(
                 f"output_space must be one of 'gene', 'all', or 'embedding'; got {self.output_space!r}"
             )
+        if downsample is None:
+            self.downsample = None
+        else:
+            try:
+                downsample = float(downsample)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"downsample must be a float in (0, 1]; got {downsample!r}"
+                ) from exc
+            if not (0.0 < downsample <= 1.0):
+                raise ValueError(
+                    f"downsample must be in (0, 1]; got {downsample!r}"
+                )
+            self.downsample = downsample
+        self.is_log1p = bool(is_log1p)
         self.additional_obs = self._validate_additional_obs(additional_obs)
 
         # Load metadata cache and open file
@@ -365,7 +384,7 @@ class PerturbationDataset(Dataset):
     @lru_cache(
         maxsize=10000
     )  # cache the results of the function; lots of hits for batch mapping since most sentences have repeated cells
-    def fetch_gene_expression(self, idx: int) -> torch.Tensor:
+    def _fetch_gene_expression_raw(self, idx: int) -> torch.Tensor:
         """
         Fetch raw gene counts for a given cell index.
 
@@ -399,6 +418,70 @@ class PerturbationDataset(Dataset):
             row_data = self.h5_file["/X"][idx]
             data = torch.tensor(row_data, dtype=torch.float32)
         return data
+
+    @lru_cache(
+        maxsize=10000
+    )  # cache row indices/data separately for sparse downsampling
+    def _fetch_gene_expression_csr_row(
+        self, idx: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        indptr = self.h5_file["/X/indptr"]
+        start_ptr = indptr[idx]
+        end_ptr = indptr[idx + 1]
+        sub_data = np.asarray(self.h5_file["/X/data"][start_ptr:end_ptr])
+        sub_indices = np.asarray(self.h5_file["/X/indices"][start_ptr:end_ptr])
+        return sub_indices.astype(np.int64), sub_data.astype(np.float32)
+
+    def _maybe_downsample_counts(self, counts: torch.Tensor) -> torch.Tensor:
+        if (
+            self.downsample is None
+            or self.downsample >= 1.0
+            or self.output_space != "all"
+        ):
+            return counts
+
+        counts_np = counts.detach().cpu().numpy()
+        if self.is_log1p:
+            counts_lin = np.expm1(counts_np)
+            counts_int = np.rint(counts_lin).astype(np.int64)
+        else:
+            counts_int = counts_np.astype(np.int64)
+        counts_int = np.maximum(counts_int, 0)
+        sampled = self.rng.binomial(counts_int, self.downsample)
+        if self.is_log1p:
+            sampled = np.log1p(sampled)
+        return torch.tensor(sampled, dtype=torch.float32)
+
+    def fetch_gene_expression(self, idx: int) -> torch.Tensor:
+        """
+        Fetch raw gene counts for a given cell index, applying optional downsampling.
+        """
+        attrs = dict(self.h5_file["X"].attrs)
+        if (
+            attrs.get("encoding-type") == "csr_matrix"
+            and self.downsample is not None
+            and self.downsample < 1.0
+            and self.output_space == "all"
+        ):
+            sub_indices, sub_data = self._fetch_gene_expression_csr_row(idx)
+            dense = np.zeros(self.n_genes, dtype=np.float32)
+            if sub_indices.size:
+                if self.is_log1p:
+                    counts_lin = np.expm1(sub_data)
+                    counts_int = np.rint(counts_lin).astype(np.int64)
+                else:
+                    counts_int = sub_data.astype(np.int64)
+                counts_int = np.maximum(counts_int, 0)
+                sampled = self.rng.binomial(counts_int, self.downsample).astype(
+                    np.float32
+                )
+                if self.is_log1p:
+                    sampled = np.log1p(sampled)
+                dense[sub_indices] = sampled
+            return torch.from_numpy(dense)
+
+        data = self._fetch_gene_expression_raw(idx)
+        return self._maybe_downsample_counts(data)
 
     @lru_cache(maxsize=10000)
     def fetch_obsm_expression(self, idx: int, key: str) -> torch.Tensor:
