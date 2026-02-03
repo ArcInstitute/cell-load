@@ -250,6 +250,114 @@ class PerturbationDataset(Dataset):
 
         return sample
 
+    def __getitems__(self, indices):
+        """
+        Batch-aware fetch for consecutive loading with batched CSR densification.
+        Falls back to per-item access when not applicable.
+        """
+        if not self._use_batched_fetch():
+            return [self.__getitem__(int(i)) for i in indices]
+
+        idx_arr = np.asarray(indices, dtype=np.int64)
+        if idx_arr.size == 0:
+            return []
+
+        file_indices = self.all_indices[idx_arr]
+        splits = [self._find_split_for_idx(int(i)) for i in file_indices]
+
+        ctrl_indices = []
+        for file_idx, split in zip(file_indices, splits):
+            ctrl_idx = self.mapping_strategy.get_control_index(
+                self, split, int(file_idx)
+            )
+            if ctrl_idx is None:
+                raise ValueError(
+                    f"No control cells found for cell type '{self.get_cell_type(file_idx)}'"
+                )
+            ctrl_indices.append(int(ctrl_idx))
+
+        ctrl_indices_arr = np.asarray(ctrl_indices, dtype=np.int64)
+
+        pert_expr_batch = self._fetch_gene_expression_batch(file_indices)
+        ctrl_expr_batch = self._fetch_gene_expression_batch(ctrl_indices_arr)
+
+        samples = []
+        for i, file_idx in enumerate(file_indices):
+            pert_expr = pert_expr_batch[i]
+            ctrl_expr = ctrl_expr_batch[i]
+            ctrl_idx = ctrl_indices_arr[i]
+
+            pert_code = self.metadata_cache.pert_codes[file_idx]
+            pert_name = self.pert_categories[pert_code]
+            pert_onehot = (
+                self.pert_onehot_map.get(pert_name) if self.pert_onehot_map else None
+            )
+
+            cell_type = self.cell_type_categories[
+                self.metadata_cache.cell_type_codes[file_idx]
+            ]
+            cell_type_onehot = (
+                self.cell_type_onehot_map.get(cell_type)
+                if self.cell_type_onehot_map
+                else None
+            )
+
+            batch_code = self.metadata_cache.batch_codes[file_idx]
+            batch_name = self.metadata_cache.batch_categories[batch_code]
+            batch_onehot = (
+                self.batch_onehot_map.get(batch_name) if self.batch_onehot_map else None
+            )
+
+            sample = {
+                "pert_cell_emb": pert_expr,
+                "ctrl_cell_emb": ctrl_expr,
+                "pert_emb": pert_onehot,
+                "pert_name": pert_name,
+                "batch_name": batch_name,
+                "batch": batch_onehot,
+                "cell_type": cell_type,
+                "cell_type_onehot": cell_type_onehot,
+            }
+
+            if self.store_raw_expression and self.output_space != "embedding":
+                if self.output_space == "gene":
+                    sample["pert_cell_counts"] = self.fetch_obsm_expression(
+                        file_idx, "X_hvg"
+                    )
+                elif self.output_space == "all":
+                    sample["pert_cell_counts"] = pert_expr
+
+            if self.store_raw_basal and self.output_space != "embedding":
+                if self.output_space == "gene":
+                    sample["ctrl_cell_counts"] = self.fetch_obsm_expression(
+                        ctrl_idx, "X_hvg"
+                    )
+                elif self.output_space == "all":
+                    sample["ctrl_cell_counts"] = ctrl_expr
+
+            if self.barcode and self.cell_barcodes is not None:
+                sample["pert_cell_barcode"] = self.cell_barcodes[file_idx]
+                sample["ctrl_cell_barcode"] = self.cell_barcodes[ctrl_idx]
+
+            if self.additional_obs:
+                for obs_key in self.additional_obs:
+                    sample[obs_key] = self._fetch_obs_value(file_idx, obs_key)
+
+            samples.append(sample)
+
+        return samples
+
+    def _use_batched_fetch(self) -> bool:
+        if not getattr(self.mapping_strategy, "use_consecutive_loading", False):
+            return False
+        if self.embed_key is not None:
+            return False
+        if self.output_space != "all":
+            return False
+        if self.downsample is not None and self.downsample < 1.0:
+            return False
+        return True
+
     def _validate_additional_obs(self, additional_obs: list[str] | None) -> list[str]:
         if additional_obs is None:
             return []
@@ -482,6 +590,90 @@ class PerturbationDataset(Dataset):
 
         data = self._fetch_gene_expression_raw(idx)
         return self._maybe_downsample_counts(data)
+
+    def _fetch_gene_expression_batch(self, indices: np.ndarray) -> torch.Tensor:
+        """
+        Fetch raw gene counts for multiple indices at once (CSR fast path).
+        """
+        if indices.size == 0:
+            return torch.empty((0, self.n_genes), dtype=torch.float32)
+
+        attrs = dict(self.h5_file["X"].attrs)
+        if attrs.get("encoding-type") != "csr_matrix":
+            row_data = self.h5_file["/X"][indices]
+            return torch.tensor(row_data, dtype=torch.float32)
+
+        indptr_ds = self.h5_file["/X/indptr"]
+        data_ds = self.h5_file["/X/data"]
+        indices_ds = self.h5_file["/X/indices"]
+
+        order = np.argsort(indices)
+        sorted_rows = indices[order]
+        dense_sorted = np.zeros((len(sorted_rows), self.n_genes), dtype=np.float32)
+
+        run_start = 0
+        for i in range(1, len(sorted_rows)):
+            if sorted_rows[i] != sorted_rows[i - 1] + 1:
+                self._fill_dense_run(
+                    sorted_rows,
+                    run_start,
+                    i,
+                    dense_sorted,
+                    indptr_ds,
+                    data_ds,
+                    indices_ds,
+                )
+                run_start = i
+
+        self._fill_dense_run(
+            sorted_rows,
+            run_start,
+            len(sorted_rows),
+            dense_sorted,
+            indptr_ds,
+            data_ds,
+            indices_ds,
+        )
+
+        inv_order = np.empty_like(order)
+        inv_order[order] = np.arange(len(order))
+        dense = dense_sorted[inv_order]
+
+        return torch.from_numpy(dense)
+
+    def _fill_dense_run(
+        self,
+        sorted_rows: np.ndarray,
+        start: int,
+        end: int,
+        dense_sorted: np.ndarray,
+        indptr_ds,
+        data_ds,
+        indices_ds,
+    ) -> None:
+        if start >= end:
+            return
+
+        row_start = int(sorted_rows[start])
+        row_end = int(sorted_rows[end - 1])
+        indptr_slice = indptr_ds[row_start : row_end + 2]
+        base_ptr = int(indptr_slice[0])
+        end_ptr = int(indptr_slice[-1])
+
+        if end_ptr <= base_ptr:
+            return
+
+        block_data = np.asarray(data_ds[base_ptr:end_ptr], dtype=np.float32)
+        block_indices = np.asarray(indices_ds[base_ptr:end_ptr], dtype=np.int64)
+
+        for offset, row in enumerate(sorted_rows[start:end]):
+            ptr_start = int(indptr_slice[offset] - base_ptr)
+            ptr_end = int(indptr_slice[offset + 1] - base_ptr)
+            if ptr_end <= ptr_start:
+                continue
+            dense_sorted[start + offset, block_indices[ptr_start:ptr_end]] = (
+                block_data[ptr_start:ptr_end]
+            )
 
     @lru_cache(maxsize=10000)
     def fetch_obsm_expression(self, idx: int, key: str) -> torch.Tensor:

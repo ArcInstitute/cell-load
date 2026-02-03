@@ -408,7 +408,8 @@ class PerturbationDataModule(LightningDataModule):
             num_workers=self.num_workers,
             collate_fn=collate_fn,
             pin_memory=True,
-            prefetch_factor=4 if not test and self.num_workers > 0 else None,
+            prefetch_factor=8 if not test and self.num_workers > 0 else None,
+            persistent_workers=bool(self.num_workers > 0 and not test),
         )
 
     def _setup_global_maps(self):
@@ -427,7 +428,6 @@ class PerturbationDataModule(LightningDataModule):
         for dataset_name in self.config.get_all_datasets():
             dataset_path = Path(self.config.datasets[dataset_name])
             files = self._find_dataset_files(dataset_path)
-
             for _fname, fpath in files.items():
                 with h5py.File(fpath, "r") as f:
                     uns = f.get("uns")
@@ -543,9 +543,26 @@ class PerturbationDataModule(LightningDataModule):
         Uses H5MetadataCache for faster metadata access.
         """
 
-        for dataset_name in self.config.get_all_datasets():
+        dataset_names = list(self.config.get_all_datasets())
+        dataset_files: dict[str, dict[str, Path]] = {}
+        total_files = 0
+        for dataset_name in dataset_names:
             dataset_path = Path(self.config.datasets[dataset_name])
             files = self._find_dataset_files(dataset_path)
+            dataset_files[dataset_name] = files
+            total_files += len(files)
+
+        pbar = (
+            tqdm(total=total_files, desc="Processing datasets", leave=False)
+            if total_files > 0
+            else None
+        )
+
+        for dataset_name in dataset_names:
+            files = dataset_files[dataset_name]
+
+            if pbar is not None:
+                pbar.set_description(f"Processing {dataset_name}")
 
             # Get configuration for this dataset
             zeroshot_celltypes = self.config.get_zeroshot_celltypes(dataset_name)
@@ -558,9 +575,7 @@ class PerturbationDataModule(LightningDataModule):
             logger.info(f"  - Fewshot cell types: {list(fewshot_celltypes.keys())}")
 
             # Process each file in the dataset
-            for fname, fpath in tqdm(
-                list(files.items()), desc=f"Processing {dataset_name}"
-            ):
+            for fname, fpath in files.items():
                 # Create metadata cache
                 cache = GlobalH5MetadataCache().get_cache(
                     str(fpath),
@@ -607,11 +622,16 @@ class PerturbationDataModule(LightningDataModule):
                     val_sum += counts["val"]
                     test_sum += counts["test"]
 
-                tqdm.write(
-                    f"Processed {fname}: {train_sum} train, {val_sum} val, {test_sum} test"
-                )
+                if pbar is not None:
+                    pbar.update(1)
+                    pbar.set_postfix_str(
+                        f"{train_sum} train, {val_sum} val, {test_sum} test"
+                    )
 
             logger.info("\n")
+
+        if pbar is not None:
+            pbar.close()
 
     def _split_fewshot_celltype(
         self,

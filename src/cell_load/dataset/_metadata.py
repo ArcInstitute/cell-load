@@ -1,4 +1,6 @@
-from torch.utils.data import ConcatDataset, Dataset
+from bisect import bisect_right
+
+from torch.utils.data import ConcatDataset, Dataset, Subset
 
 
 class MetadataConcatDataset(ConcatDataset):
@@ -25,3 +27,38 @@ class MetadataConcatDataset(ConcatDataset):
                 raise ValueError(
                     "All datasets must share the same embed_key, control_pert, pert_col, and batch_col"
                 )
+
+    def __getitems__(self, indices):
+        """
+        Batch-aware fetch to enable fast-path loading when supported by datasets.
+        Falls back to per-item access for non-consecutive loading.
+        """
+        if not getattr(self.base.mapping_strategy, "use_consecutive_loading", False):
+            return [self[i] for i in indices]
+
+        results = [None] * len(indices)
+        grouped = {}
+
+        for out_pos, idx in enumerate(indices):
+            dataset_idx = bisect_right(self.cumulative_sizes, idx)
+            sample_idx = (
+                idx if dataset_idx == 0 else idx - self.cumulative_sizes[dataset_idx - 1]
+            )
+            grouped.setdefault(dataset_idx, []).append((out_pos, sample_idx))
+
+        for dataset_idx, pos_samples in grouped.items():
+            ds = self.datasets[dataset_idx]
+            positions, sample_indices = zip(*pos_samples)
+
+            if isinstance(ds, Subset) and hasattr(ds.dataset, "__getitems__"):
+                underlying_indices = [ds.indices[i] for i in sample_indices]
+                samples = ds.dataset.__getitems__(underlying_indices)
+            elif hasattr(ds, "__getitems__"):
+                samples = ds.__getitems__(list(sample_indices))
+            else:
+                samples = [ds[i] for i in sample_indices]
+
+            for pos, sample in zip(positions, samples):
+                results[pos] = sample
+
+        return results
