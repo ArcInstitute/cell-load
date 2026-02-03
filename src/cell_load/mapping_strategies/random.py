@@ -47,10 +47,16 @@ class RandomMappingStrategy(BaseMappingStrategy):
                 f"Warning: If using n_basal_samples > 1, use the original behavior by setting cache_perturbation_control_pairs=False"
             )
         if self.use_consecutive_loading:
-            logger.info(
-                "RandomMappingStrategy initialized with use_consecutive_loading=True; "
-                "control mappings will be assigned in file order."
-            )
+            if self.cache_perturbation_control_pairs:
+                logger.info(
+                    "RandomMappingStrategy initialized with use_consecutive_loading=True; "
+                    "control mappings will be assigned in file order."
+                )
+            else:
+                logger.info(
+                    "RandomMappingStrategy initialized with use_consecutive_loading=True; "
+                    "control cells will be sampled as consecutive blocks with random offsets."
+                )
 
         # Map cell type -> list of control indices.
         self.split_control_pool = {
@@ -105,7 +111,7 @@ class RandomMappingStrategy(BaseMappingStrategy):
             else:
                 self.split_control_pool[split][ct].extend(ct_indices)
 
-        build_mapping = self.cache_perturbation_control_pairs or self.use_consecutive_loading
+        build_mapping = self.cache_perturbation_control_pairs
         if build_mapping:
             logger.info(
                 f"Creating cached perturbation-control mapping for split '{split}' with {len(perturbed_indices)} perturbed cells and {len(control_indices)} control cells"
@@ -182,10 +188,11 @@ class RandomMappingStrategy(BaseMappingStrategy):
         Returns n_basal_samples control indices that are from the same cell type as the perturbed cell.
 
         If cache_perturbation_control_pairs is True, uses the pre-computed mapping.
-        If False, samples new control cells each time (original behavior).
+        If use_consecutive_loading is True, samples a consecutive block with a random offset.
+        Otherwise, samples new control cells each time (original behavior).
         """
 
-        if self.cache_perturbation_control_pairs or self.use_consecutive_loading:
+        if self.cache_perturbation_control_pairs:
             # Use cached mapping
             control_idxs = self.split_control_mapping[split][perturbed_idx]
             if len(control_idxs) == 0:
@@ -193,6 +200,14 @@ class RandomMappingStrategy(BaseMappingStrategy):
                     f"No control cells found in RandomMappingStrategy for cell type '{dataset.get_cell_type(perturbed_idx)}'"
                 )
             return np.array(control_idxs)
+        if self.use_consecutive_loading:
+            pert_cell_type = dataset.get_cell_type(perturbed_idx)
+            pool = self.split_control_pool[split].get(pert_cell_type, None)
+            if not pool:
+                raise ValueError(
+                    f"No control cells found in RandomMappingStrategy for cell type '{pert_cell_type}'"
+                )
+            return self._sample_consecutive_controls(pool, self.n_basal_samples)
         else:
             # Sample new control cells each time (original behavior)
             pert_cell_type = dataset.get_cell_type(perturbed_idx)
@@ -211,15 +226,22 @@ class RandomMappingStrategy(BaseMappingStrategy):
         Returns a single control index from the same cell type as the perturbed cell.
 
         If cache_perturbation_control_pairs is True, uses the pre-computed mapping.
-        If False, samples a new control cell each time (original behavior).
+        If use_consecutive_loading is True, samples a consecutive control with a random offset.
+        Otherwise, samples a new control cell each time (original behavior).
         """
 
-        if self.cache_perturbation_control_pairs or self.use_consecutive_loading:
+        if self.cache_perturbation_control_pairs:
             # Use cached mapping
             control_idxs = self.split_control_mapping[split][perturbed_idx]
             if len(control_idxs) == 0:
                 return None
             return control_idxs[0]
+        if self.use_consecutive_loading:
+            pert_cell_type = dataset.get_cell_type(perturbed_idx)
+            pool = self.split_control_pool[split].get(pert_cell_type, None)
+            if not pool:
+                return None
+            return self._sample_consecutive_controls(pool, 1)[0]
         else:
             # Sample new control cell each time (original behavior)
             pert_cell_type = dataset.get_cell_type(perturbed_idx)
@@ -227,3 +249,24 @@ class RandomMappingStrategy(BaseMappingStrategy):
             if not pool:
                 return None
             return self.rng.choice(pool)
+
+    def _sample_consecutive_controls(
+        self, pool: list[int], n_samples: int
+    ) -> np.ndarray:
+        """Return n_samples consecutive control indices with a random start offset."""
+        pool_size = len(pool)
+        if pool_size == 0 or n_samples <= 0:
+            return np.array([], dtype=np.int64)
+        if pool_size == 1:
+            return np.array([pool[0]] * n_samples, dtype=np.int64)
+
+        start = self.rng.randrange(pool_size)
+        if n_samples == 1:
+            return np.array([pool[start]], dtype=np.int64)
+
+        if start + n_samples <= pool_size:
+            return np.array(pool[start : start + n_samples], dtype=np.int64)
+
+        tail = pool[start:]
+        head = pool[: n_samples - len(tail)]
+        return np.array(tail + head, dtype=np.int64)
