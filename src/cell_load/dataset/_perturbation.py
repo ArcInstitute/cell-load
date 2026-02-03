@@ -10,6 +10,7 @@ from torch.utils.data import Dataset, Subset
 from ..mapping_strategies import BaseMappingStrategy
 from ..utils.data_utils import (
     GlobalH5MetadataCache,
+    safe_decode_array,
     suspected_discrete_torch,
     suspected_log_torch,
 )
@@ -42,6 +43,9 @@ class PerturbationDataset(Dataset):
         should_yield_control_cells: bool = True,
         store_raw_basal: bool = False,
         barcode: bool = False,
+        additional_obs: list[str] | None = None,
+        downsample: float | None = None,
+        is_log1p: bool = False,
         **kwargs,
     ):
         """
@@ -63,6 +67,9 @@ class PerturbationDataset(Dataset):
             should_yield_control_cells: Include control cells in output
             store_raw_basal: If True, include raw basal expression
             barcode: If True, include cell barcodes in output
+            additional_obs: Optional list of obs column names to include in each sample
+            downsample: Fraction of counts to retain via binomial downsampling (only for output_space="all")
+            is_log1p: Whether raw counts in X are log1p-transformed (affects downsampling)
             **kwargs: Additional options (e.g. output_space)
         """
         super().__init__()
@@ -87,6 +94,20 @@ class PerturbationDataset(Dataset):
             raise ValueError(
                 f"output_space must be one of 'gene', 'all', or 'embedding'; got {self.output_space!r}"
             )
+        if downsample is None:
+            self.downsample = None
+        else:
+            try:
+                downsample = float(downsample)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"downsample must be a float in (0, 1]; got {downsample!r}"
+                ) from exc
+            if not (0.0 < downsample <= 1.0):
+                raise ValueError(f"downsample must be in (0, 1]; got {downsample!r}")
+            self.downsample = downsample
+        self.is_log1p = bool(is_log1p)
+        self.additional_obs = self._validate_additional_obs(additional_obs)
 
         # Load metadata cache and open file
         self.metadata_cache = GlobalH5MetadataCache().get_cache(
@@ -223,7 +244,72 @@ class PerturbationDataset(Dataset):
             sample["pert_cell_barcode"] = self.cell_barcodes[file_idx]
             sample["ctrl_cell_barcode"] = self.cell_barcodes[ctrl_idx]
 
+        if self.additional_obs:
+            for obs_key in self.additional_obs:
+                sample[obs_key] = self._fetch_obs_value(file_idx, obs_key)
+
         return sample
+
+    def _validate_additional_obs(self, additional_obs: list[str] | None) -> list[str]:
+        if additional_obs is None:
+            return []
+        if isinstance(additional_obs, (str, bytes, bytearray)):
+            raise TypeError(
+                "additional_obs must be a list of obs column names, not a string."
+            )
+        obs_list = [str(item) for item in additional_obs]
+        if len(set(obs_list)) != len(obs_list):
+            raise ValueError("additional_obs contains duplicate column names.")
+        reserved_keys = {
+            "pert_cell_emb",
+            "ctrl_cell_emb",
+            "pert_emb",
+            "pert_name",
+            "batch_name",
+            "batch",
+            "cell_type",
+            "cell_type_onehot",
+            "pert_cell_counts",
+            "ctrl_cell_counts",
+            "pert_cell_barcode",
+            "ctrl_cell_barcode",
+        }
+        collision = reserved_keys & set(obs_list)
+        if collision:
+            raise ValueError(
+                f"additional_obs contains reserved keys: {sorted(collision)}"
+            )
+        return obs_list
+
+    def _fetch_obs_value(self, idx: int, key: str):
+        obs = self.h5_file["obs"]
+        if key not in obs:
+            raise KeyError(f"obs/{key} not found in {self.h5_path}")
+
+        entry = obs[key]
+        if isinstance(entry, h5py.Group):
+            if "codes" in entry and "categories" in entry:
+                code = entry["codes"][idx]
+                if isinstance(code, np.ndarray):
+                    code = code.item()
+                category = entry["categories"][int(code)]
+                return self._decode_obs_value(category)
+            raise KeyError(f"obs/{key} is a group without categorical codes/categories")
+
+        value = entry[idx]
+        return self._decode_obs_value(value)
+
+    def _decode_obs_value(self, value):
+        if isinstance(value, np.ndarray):
+            if value.shape == ():
+                value = value.item()
+            elif value.dtype.kind in {"S", "U", "O"}:
+                return safe_decode_array(value).tolist()
+            else:
+                return value
+        if isinstance(value, (bytes, bytearray, np.bytes_)):
+            return value.decode("utf-8", errors="ignore")
+        return value
 
     def get_batch(self, idx: int) -> torch.Tensor:
         """
@@ -300,7 +386,7 @@ class PerturbationDataset(Dataset):
     @lru_cache(
         maxsize=10000
     )  # cache the results of the function; lots of hits for batch mapping since most sentences have repeated cells
-    def fetch_gene_expression(self, idx: int) -> torch.Tensor:
+    def _fetch_gene_expression_raw(self, idx: int) -> torch.Tensor:
         """
         Fetch raw gene counts for a given cell index.
 
@@ -334,6 +420,68 @@ class PerturbationDataset(Dataset):
             row_data = self.h5_file["/X"][idx]
             data = torch.tensor(row_data, dtype=torch.float32)
         return data
+
+    @lru_cache(
+        maxsize=10000
+    )  # cache row indices/data separately for sparse downsampling
+    def _fetch_gene_expression_csr_row(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
+        indptr = self.h5_file["/X/indptr"]
+        start_ptr = indptr[idx]
+        end_ptr = indptr[idx + 1]
+        sub_data = np.asarray(self.h5_file["/X/data"][start_ptr:end_ptr])
+        sub_indices = np.asarray(self.h5_file["/X/indices"][start_ptr:end_ptr])
+        return sub_indices.astype(np.int64), sub_data.astype(np.float32)
+
+    def _maybe_downsample_counts(self, counts: torch.Tensor) -> torch.Tensor:
+        if (
+            self.downsample is None
+            or self.downsample >= 1.0
+            or self.output_space != "all"
+        ):
+            return counts
+
+        counts_np = counts.detach().cpu().numpy()
+        if self.is_log1p:
+            counts_lin = np.expm1(counts_np)
+            counts_int = np.rint(counts_lin).astype(np.int64)
+        else:
+            counts_int = counts_np.astype(np.int64)
+        counts_int = np.maximum(counts_int, 0)
+        sampled = self.rng.binomial(counts_int, self.downsample)
+        if self.is_log1p:
+            sampled = np.log1p(sampled)
+        return torch.tensor(sampled, dtype=torch.float32)
+
+    def fetch_gene_expression(self, idx: int) -> torch.Tensor:
+        """
+        Fetch raw gene counts for a given cell index, applying optional downsampling.
+        """
+        attrs = dict(self.h5_file["X"].attrs)
+        if (
+            attrs.get("encoding-type") == "csr_matrix"
+            and self.downsample is not None
+            and self.downsample < 1.0
+            and self.output_space == "all"
+        ):
+            sub_indices, sub_data = self._fetch_gene_expression_csr_row(idx)
+            dense = np.zeros(self.n_genes, dtype=np.float32)
+            if sub_indices.size:
+                if self.is_log1p:
+                    counts_lin = np.expm1(sub_data)
+                    counts_int = np.rint(counts_lin).astype(np.int64)
+                else:
+                    counts_int = sub_data.astype(np.int64)
+                counts_int = np.maximum(counts_int, 0)
+                sampled = self.rng.binomial(counts_int, self.downsample).astype(
+                    np.float32
+                )
+                if self.is_log1p:
+                    sampled = np.log1p(sampled)
+                dense[sub_indices] = sampled
+            return torch.from_numpy(dense)
+
+        data = self._fetch_gene_expression_raw(idx)
+        return self._maybe_downsample_counts(data)
 
     @lru_cache(maxsize=10000)
     def fetch_obsm_expression(self, idx: int, key: str) -> torch.Tensor:
@@ -529,6 +677,59 @@ class PerturbationDataset(Dataset):
         if has_barcodes:
             batch_dict["pert_cell_barcode"] = pert_cell_barcode_list
             batch_dict["ctrl_cell_barcode"] = ctrl_cell_barcode_list
+
+        base_keys = {
+            "pert_cell_emb",
+            "ctrl_cell_emb",
+            "pert_emb",
+            "pert_name",
+            "cell_type",
+            "cell_type_onehot",
+            "batch",
+            "batch_name",
+            "pert_cell_counts",
+            "ctrl_cell_counts",
+            "pert_cell_barcode",
+            "ctrl_cell_barcode",
+        }
+        extra_keys = [key for key in batch[0].keys() if key not in base_keys]
+        if extra_keys:
+
+            def _collate_extra(values):
+                first = values[0]
+                if torch.is_tensor(first):
+                    return torch.stack(values)
+                if isinstance(first, np.ndarray):
+                    if first.shape == ():
+                        return torch.tensor(
+                            [
+                                v.item() if isinstance(v, np.ndarray) else v
+                                for v in values
+                            ]
+                        )
+                    if first.dtype.kind in {"S", "U", "O"}:
+                        return [
+                            safe_decode_array(v).tolist()
+                            if isinstance(v, np.ndarray)
+                            else v
+                            for v in values
+                        ]
+                    return torch.as_tensor(np.stack(values))
+                if isinstance(first, (np.generic, int, float, bool)):
+                    return torch.tensor(
+                        [v.item() if isinstance(v, np.generic) else v for v in values]
+                    )
+                if isinstance(first, (bytes, bytearray, np.bytes_)):
+                    return [
+                        v.decode("utf-8", errors="ignore")
+                        if isinstance(v, (bytes, bytearray, np.bytes_))
+                        else v
+                        for v in values
+                    ]
+                return values
+
+            for key in extra_keys:
+                batch_dict[key] = _collate_extra([item[key] for item in batch])
 
         return batch_dict
 
