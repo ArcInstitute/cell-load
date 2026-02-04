@@ -98,18 +98,18 @@ class RandomMappingStrategy(BaseMappingStrategy):
         """
 
         all_indices = np.concatenate([perturbed_indices, control_indices])
-        # Get cell types for all control indices
-        cell_types = dataset.get_all_cell_types(control_indices)
+        # Get cell type codes for all control indices
+        cell_types = dataset.get_all_cell_type_codes(control_indices)
 
         # Group by cell type and store the control indices
-        for ct in np.unique(cell_types):
-            ct_mask = cell_types == ct
+        for ct_code in np.unique(cell_types):
+            ct_mask = cell_types == ct_code
             ct_indices = control_indices[ct_mask]
 
-            if ct not in self.split_control_pool[split]:
-                self.split_control_pool[split][ct] = list(ct_indices)
+            if ct_code not in self.split_control_pool[split]:
+                self.split_control_pool[split][ct_code] = list(ct_indices)
             else:
-                self.split_control_pool[split][ct].extend(ct_indices)
+                self.split_control_pool[split][ct_code].extend(ct_indices)
 
         build_mapping = self.cache_perturbation_control_pairs
         if build_mapping:
@@ -124,8 +124,8 @@ class RandomMappingStrategy(BaseMappingStrategy):
 
             # Group perturbed indices by cell type and perturbation name
             for pert_idx in all_indices:
-                pert_cell_type = dataset.get_cell_type(pert_idx)
-                pert_name = dataset.get_perturbation_name(pert_idx)
+                pert_cell_type = dataset.get_cell_type_code(pert_idx)
+                pert_name = dataset.get_perturbation_code(pert_idx)
                 key = (pert_cell_type, pert_name)
 
                 if key not in pert_groups:
@@ -201,20 +201,20 @@ class RandomMappingStrategy(BaseMappingStrategy):
                 )
             return np.array(control_idxs)
         if self.use_consecutive_loading:
-            pert_cell_type = dataset.get_cell_type(perturbed_idx)
+            pert_cell_type = dataset.get_cell_type_code(perturbed_idx)
             pool = self.split_control_pool[split].get(pert_cell_type, None)
             if not pool:
                 raise ValueError(
-                    f"No control cells found in RandomMappingStrategy for cell type '{pert_cell_type}'"
+                    f"No control cells found in RandomMappingStrategy for cell type '{dataset.get_cell_type(perturbed_idx)}'"
                 )
             return self._sample_consecutive_controls(pool, self.n_basal_samples)
         else:
             # Sample new control cells each time (original behavior)
-            pert_cell_type = dataset.get_cell_type(perturbed_idx)
+            pert_cell_type = dataset.get_cell_type_code(perturbed_idx)
             pool = self.split_control_pool[split].get(pert_cell_type, None)
             if not pool:
                 raise ValueError(
-                    f"No control cells found in RandomMappingStrategy for cell type '{pert_cell_type}'"
+                    f"No control cells found in RandomMappingStrategy for cell type '{dataset.get_cell_type(perturbed_idx)}'"
                 )
             control_idxs = self.rng.choices(pool, k=self.n_basal_samples)
             return np.array(control_idxs)
@@ -237,14 +237,14 @@ class RandomMappingStrategy(BaseMappingStrategy):
                 return None
             return control_idxs[0]
         if self.use_consecutive_loading:
-            pert_cell_type = dataset.get_cell_type(perturbed_idx)
+            pert_cell_type = dataset.get_cell_type_code(perturbed_idx)
             pool = self.split_control_pool[split].get(pert_cell_type, None)
             if not pool:
                 return None
             return self._sample_consecutive_controls(pool, 1)[0]
         else:
             # Sample new control cell each time (original behavior)
-            pert_cell_type = dataset.get_cell_type(perturbed_idx)
+            pert_cell_type = dataset.get_cell_type_code(perturbed_idx)
             pool = self.split_control_pool[split].get(pert_cell_type, None)
             if not pool:
                 return None

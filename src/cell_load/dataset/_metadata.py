@@ -62,3 +62,12 @@ class MetadataConcatDataset(ConcatDataset):
                 results[pos] = sample
 
         return results
+
+    def ensure_h5_open(self) -> None:
+        """
+        Ensure all underlying H5 files are open in the current process.
+        """
+        for ds in self.datasets:
+            base = ds.dataset if isinstance(ds, Subset) else ds
+            if hasattr(base, "ensure_h5_open"):
+                base.ensure_h5_open()

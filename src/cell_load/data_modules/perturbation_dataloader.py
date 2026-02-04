@@ -1,4 +1,5 @@
 import logging
+import os
 import glob
 import re
 
@@ -10,7 +11,7 @@ import h5py
 import numpy as np
 import torch
 from lightning.pytorch import LightningDataModule
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, get_worker_info
 from tqdm import tqdm
 
 from ..config import ExperimentConfig
@@ -24,6 +25,23 @@ from ..utils.data_utils import (
 from .samplers import PerturbationBatchSampler
 
 logger = logging.getLogger(__name__)
+
+
+def _worker_init_fn(worker_id: int) -> None:
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ.setdefault(var, "1")
+    try:
+        torch.set_num_threads(1)
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
+
+    worker_info = get_worker_info()
+    if worker_info is None:
+        return
+    dataset = worker_info.dataset
+    if hasattr(dataset, "ensure_h5_open"):
+        dataset.ensure_h5_open()
 
 
 class PerturbationDataModule(LightningDataModule):
@@ -55,6 +73,7 @@ class PerturbationDataModule(LightningDataModule):
         drop_last: bool = False,
         additional_obs: list[str] | None = None,
         use_consecutive_loading: bool = False,
+        h5_open_kwargs: dict | None = None,
         **kwargs,  # missing perturbation_features_file  and store_raw_basal for backwards compatibility
     ):
         """
@@ -77,6 +96,7 @@ class PerturbationDataModule(LightningDataModule):
             cache_perturbation_control_pairs: If True cache perturbation-control pairs at the start of training and reuse them.
             drop_last: Whether to drop the last sentence set if it is smaller than cell_sentence_len
             use_consecutive_loading: Whether to form cell sets from consecutive indices for faster IO
+            h5_open_kwargs: Optional kwargs to pass to h5py.File (e.g., rdcc_nbytes)
         """
         super().__init__()
 
@@ -121,6 +141,9 @@ class PerturbationDataModule(LightningDataModule):
         self.store_raw_basal = kwargs.get("store_raw_basal", False)
         self.barcode = kwargs.get("barcode", False)
         self.additional_obs = additional_obs
+        self.h5_open_kwargs = h5_open_kwargs
+        if self.use_consecutive_loading:
+            self._set_h5_cache_env_defaults()
 
         logger.info(
             f"Initializing DataModule: batch_size={batch_size}, workers={num_workers}, "
@@ -162,6 +185,12 @@ class PerturbationDataModule(LightningDataModule):
             if datasets:
                 return datasets[0].dataset
         raise ValueError("No datasets available to extract metadata.")
+
+    @staticmethod
+    def _set_h5_cache_env_defaults() -> None:
+        os.environ.setdefault("CELL_LOAD_H5_RDCC_NBYTES", str(64 * 1024 * 1024))
+        os.environ.setdefault("CELL_LOAD_H5_RDCC_NSLOTS", "1000003")
+        os.environ.setdefault("CELL_LOAD_H5_RDCC_W0", "0.75")
 
     def get_var_names(self):
         """
@@ -219,6 +248,7 @@ class PerturbationDataModule(LightningDataModule):
             "barcode": self.barcode,
             "additional_obs": self.additional_obs,
             "use_consecutive_loading": self.use_consecutive_loading,
+            "h5_open_kwargs": self.h5_open_kwargs,
         }
 
         torch.save(save_dict, filepath)
@@ -262,6 +292,7 @@ class PerturbationDataModule(LightningDataModule):
             "store_raw_basal": save_dict.pop("store_raw_basal", False),
             "barcode": save_dict.pop("barcode", True),
             "use_consecutive_loading": save_dict.pop("use_consecutive_loading", False),
+            "h5_open_kwargs": save_dict.pop("h5_open_kwargs", None),
         }
 
         # Create new instance with all the saved parameters
@@ -408,8 +439,9 @@ class PerturbationDataModule(LightningDataModule):
             num_workers=self.num_workers,
             collate_fn=collate_fn,
             pin_memory=True,
-            prefetch_factor=8 if not test and self.num_workers > 0 else None,
+            prefetch_factor=4 if not test and self.num_workers > 0 else None,
             persistent_workers=bool(self.num_workers > 0 and not test),
+            worker_init_fn=_worker_init_fn if self.num_workers > 0 else None,
         )
 
     def _setup_global_maps(self):
@@ -536,6 +568,7 @@ class PerturbationDataModule(LightningDataModule):
             downsample=self.downsample,
             is_log1p=self.is_log1p,
             cell_sentence_len=self.cell_sentence_len,
+            h5_open_kwargs=self.h5_open_kwargs,
         )
 
     def _setup_datasets(self):

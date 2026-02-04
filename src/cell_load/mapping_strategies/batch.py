@@ -66,8 +66,8 @@ class BatchMappingStrategy(BaseMappingStrategy):
         For each control cell, we retrieve both its batch and cell type, using that pair as the key.
         """
         for idx in control_indices:
-            batch = dataset.get_batch(idx)
-            cell_type = dataset.get_cell_type(idx)
+            batch = dataset.get_batch_code(idx)
+            cell_type = dataset.get_cell_type_code(idx)
             key = (batch, cell_type)
             if key not in self.split_control_maps[split]:
                 self.split_control_maps[split][key] = []
@@ -92,18 +92,18 @@ class BatchMappingStrategy(BaseMappingStrategy):
         all_indices = np.concatenate([perturbed_indices, control_indices])
 
         # Fallback pools by cell type (sorted for deterministic order).
-        fallback_pools: dict[str, list[int]] = {}
+        fallback_pools: dict[int, list[int]] = {}
         for (batch, cell_type), indices in self.split_control_maps[split].items():
             fallback_pools.setdefault(cell_type, []).extend(indices)
         for cell_type, pool in fallback_pools.items():
             fallback_pools[cell_type] = sorted(pool)
 
-        key_offsets: dict[tuple[int, str], int] = {}
-        fallback_offsets: dict[str, int] = {}
+        key_offsets: dict[tuple[int, int], int] = {}
+        fallback_offsets: dict[int, int] = {}
 
         for idx in all_indices:
-            batch = dataset.get_batch(idx)
-            cell_type = dataset.get_cell_type(idx)
+            batch = dataset.get_batch_code(idx)
+            cell_type = dataset.get_cell_type_code(idx)
             key = (batch, cell_type)
             pool = self.split_control_maps[split].get(key, [])
 
@@ -146,8 +146,8 @@ class BatchMappingStrategy(BaseMappingStrategy):
                 )
             return np.array(control_idxs)
 
-        batch = dataset.get_batch(perturbed_idx)
-        cell_type = dataset.get_cell_type(perturbed_idx)
+        batch = dataset.get_batch_code(perturbed_idx)
+        cell_type = dataset.get_cell_type_code(perturbed_idx)
         key = (batch, cell_type)
         pool = self.split_control_maps[split].get(key, [])
 
@@ -161,7 +161,7 @@ class BatchMappingStrategy(BaseMappingStrategy):
         if not pool:
             raise ValueError(
                 "No control cells found in BatchMappingStrategy for cell type '{}'".format(
-                    cell_type
+                    dataset.get_cell_type(perturbed_idx)
                 )
             )
 
@@ -181,8 +181,8 @@ class BatchMappingStrategy(BaseMappingStrategy):
                 return None
             return control_idxs[0]
 
-        batch = dataset.get_batch(perturbed_idx)
-        cell_type = dataset.get_cell_type(perturbed_idx)
+        batch = dataset.get_batch_code(perturbed_idx)
+        cell_type = dataset.get_cell_type_code(perturbed_idx)
         key = (batch, cell_type)
         pool = self.split_control_maps[split].get(key, [])
 

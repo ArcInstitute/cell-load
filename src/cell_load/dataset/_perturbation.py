@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 from functools import lru_cache
@@ -47,6 +48,7 @@ class PerturbationDataset(Dataset):
         downsample: float | None = None,
         is_log1p: bool = False,
         cell_sentence_len: int | None = None,
+        h5_open_kwargs: dict | None = None,
         **kwargs,
     ):
         """
@@ -72,6 +74,7 @@ class PerturbationDataset(Dataset):
             downsample: Fraction of counts to retain via binomial downsampling (only for output_space="all")
             is_log1p: Whether raw counts in X are log1p-transformed (affects downsampling)
             cell_sentence_len: Optional sentence length for consecutive loading batches
+            h5_open_kwargs: Optional kwargs to pass to h5py.File (e.g., rdcc_nbytes)
             **kwargs: Additional options (e.g. output_space)
         """
         super().__init__()
@@ -110,13 +113,16 @@ class PerturbationDataset(Dataset):
             self.downsample = downsample
         self.is_log1p = bool(is_log1p)
         self.cell_sentence_len = cell_sentence_len
+        self.h5_open_kwargs = self._normalize_h5_open_kwargs(h5_open_kwargs)
         self.additional_obs = self._validate_additional_obs(additional_obs)
 
         # Load metadata cache and open file
         self.metadata_cache = GlobalH5MetadataCache().get_cache(
             str(self.h5_path), pert_col, cell_type_key, control_pert, batch_col
         )
-        self.h5_file = h5py.File(self.h5_path, "r")
+        self.h5_file = None
+        self._h5_pid = None
+        self._open_h5_file()
 
         # Load cell barcodes if requested
         if self.barcode:
@@ -138,6 +144,94 @@ class PerturbationDataset(Dataset):
         splits = ["train", "train_eval", "val", "test"]
         self.split_perturbed_indices = {s: set() for s in splits}
         self.split_control_indices = {s: set() for s in splits}
+        self._init_split_index_cache()
+
+    def _init_split_index_cache(self) -> None:
+        self._split_code_to_name = ("train", "train_eval", "val", "test")
+        self._split_name_to_code = {
+            name: idx for idx, name in enumerate(self._split_code_to_name)
+        }
+        self._index_to_split_code = np.full(self.n_cells, -1, dtype=np.int8)
+        for split, indices in self.split_perturbed_indices.items():
+            if indices:
+                self._index_to_split_code[list(indices)] = self._split_name_to_code[split]
+        for split, indices in self.split_control_indices.items():
+            if indices:
+                self._index_to_split_code[list(indices)] = self._split_name_to_code[split]
+
+    @staticmethod
+    def _parse_env_int(name: str, default: int) -> int:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        try:
+            return int(float(raw))
+        except ValueError:
+            logger.warning("Invalid %s=%r; using %d", name, raw, default)
+            return default
+
+    @staticmethod
+    def _parse_env_float(name: str, default: float) -> float:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning("Invalid %s=%r; using %.3f", name, raw, default)
+            return default
+
+    def _default_h5_open_kwargs(self) -> dict:
+        rdcc_nbytes = self._parse_env_int(
+            "CELL_LOAD_H5_RDCC_NBYTES", 64 * 1024 * 1024
+        )
+        rdcc_nslots = self._parse_env_int("CELL_LOAD_H5_RDCC_NSLOTS", 1_000_003)
+        rdcc_w0 = self._parse_env_float("CELL_LOAD_H5_RDCC_W0", 0.75)
+        kwargs = {
+            "rdcc_nbytes": rdcc_nbytes,
+            "rdcc_nslots": rdcc_nslots,
+            "rdcc_w0": rdcc_w0,
+        }
+        return self._sanitize_h5_open_kwargs(kwargs)
+
+    @staticmethod
+    def _sanitize_h5_open_kwargs(kwargs: dict) -> dict:
+        cleaned = {}
+        rdcc_nbytes = kwargs.get("rdcc_nbytes")
+        if rdcc_nbytes is not None and rdcc_nbytes > 0:
+            cleaned["rdcc_nbytes"] = int(rdcc_nbytes)
+        rdcc_nslots = kwargs.get("rdcc_nslots")
+        if rdcc_nslots is not None and rdcc_nslots > 0:
+            cleaned["rdcc_nslots"] = int(rdcc_nslots)
+        rdcc_w0 = kwargs.get("rdcc_w0")
+        if rdcc_w0 is not None and 0.0 <= float(rdcc_w0) <= 1.0:
+            cleaned["rdcc_w0"] = float(rdcc_w0)
+        return cleaned
+
+    def _normalize_h5_open_kwargs(self, h5_open_kwargs: dict | None) -> dict:
+        if h5_open_kwargs is None:
+            return self._default_h5_open_kwargs()
+        return self._sanitize_h5_open_kwargs(h5_open_kwargs)
+
+    def _open_h5_file(self) -> None:
+        if self.h5_file is not None:
+            try:
+                self.h5_file.close()
+            except Exception:
+                pass
+        self.h5_file = h5py.File(self.h5_path, "r", **self.h5_open_kwargs)
+        self._h5_pid = os.getpid()
+
+    def _ensure_h5_open(self) -> None:
+        if (
+            self.h5_file is None
+            or self._h5_pid != os.getpid()
+            or not self.h5_file.id.valid
+        ):
+            self._open_h5_file()
+
+    def ensure_h5_open(self) -> None:
+        self._ensure_h5_open()
 
     def set_store_raw_expression(self, flag: bool) -> None:
         """
@@ -181,6 +275,7 @@ class PerturbationDataset(Dataset):
         - pert_cell_counts: the raw gene expression of the perturbed cell (if store_raw_expression is True)
         - ctrl_cell_counts: the raw gene expression of the control cell (if store_raw_basal is True)
         """
+        self._ensure_h5_open()
 
         # Get the perturbed cell expression, control cell expression, and index of mapped control cell
         file_idx = int(self.all_indices[idx])
@@ -258,6 +353,7 @@ class PerturbationDataset(Dataset):
         Batch-aware fetch for consecutive loading with batched CSR densification.
         Falls back to per-item access when not applicable.
         """
+        self._ensure_h5_open()
         if not self._use_batched_fetch():
             return [self.__getitem__(int(i)) for i in indices]
 
@@ -284,13 +380,13 @@ class PerturbationDataset(Dataset):
             for start in range(0, len(file_indices), sentence_len):
                 sentence_idx = file_indices[start : start + sentence_len]
                 split = splits[start]
-                cell_type = self.get_cell_type(sentence_idx[0])
+                cell_type_code = self.get_cell_type_code(sentence_idx[0])
                 pool = self.mapping_strategy.split_control_pool[split].get(
-                    cell_type, None
+                    cell_type_code, None
                 )
                 if not pool:
                     raise ValueError(
-                        f"No control cells found in RandomMappingStrategy for cell type '{cell_type}'"
+                        f"No control cells found in RandomMappingStrategy for cell type '{self.get_cell_type(sentence_idx[0])}'"
                     )
                 block = self.mapping_strategy._sample_consecutive_controls(
                     pool, len(sentence_idx)
@@ -524,12 +620,25 @@ class PerturbationDataset(Dataset):
         code = self.metadata_cache.cell_type_codes[idx]
         return self.metadata_cache.cell_type_categories[code]
 
+    def get_cell_type_code(self, idx: int) -> int:
+        """
+        Get the cell type code for a given index.
+        """
+        idx = int(idx) if hasattr(idx, "__int__") else idx
+        return int(self.metadata_cache.cell_type_codes[idx])
+
     def get_all_cell_types(self, indices):
         """
         Get the cell types for all given indices.
         """
         codes = self.metadata_cache.cell_type_codes[indices]
         return self.metadata_cache.cell_type_categories[codes]
+
+    def get_all_cell_type_codes(self, indices) -> np.ndarray:
+        """
+        Get the cell type codes for all given indices.
+        """
+        return self.metadata_cache.cell_type_codes[indices]
 
     def get_perturbation_name(self, idx):
         """
@@ -539,6 +648,32 @@ class PerturbationDataset(Dataset):
         idx = int(idx) if hasattr(idx, "__int__") else idx
         pert_code = self.metadata_cache.pert_codes[idx]
         return self.metadata_cache.pert_categories[pert_code]
+
+    def get_perturbation_code(self, idx: int) -> int:
+        """
+        Get the perturbation code for a given index.
+        """
+        idx = int(idx) if hasattr(idx, "__int__") else idx
+        return int(self.metadata_cache.pert_codes[idx])
+
+    def get_all_perturbation_codes(self, indices) -> np.ndarray:
+        """
+        Get the perturbation codes for all given indices.
+        """
+        return self.metadata_cache.pert_codes[indices]
+
+    def get_batch_code(self, idx: int) -> int:
+        """
+        Get the batch code for a given index.
+        """
+        idx = int(idx) if hasattr(idx, "__int__") else idx
+        return int(self.metadata_cache.batch_codes[idx])
+
+    def get_all_batch_codes(self, indices) -> np.ndarray:
+        """
+        Get the batch codes for all given indices.
+        """
+        return self.metadata_cache.batch_codes[indices]
 
     def to_subset_dataset(
         self,
@@ -1084,6 +1219,13 @@ class PerturbationDataset(Dataset):
         # update them in the dataset
         self.split_perturbed_indices[split] |= set(perturbed_indices)
         self.split_control_indices[split] |= set(control_indices)
+        if not hasattr(self, "_index_to_split_code"):
+            self._init_split_index_cache()
+        code = self._split_name_to_code[split]
+        if len(perturbed_indices) > 0:
+            self._index_to_split_code[perturbed_indices] = code
+        if len(control_indices) > 0:
+            self._index_to_split_code[control_indices] = code
 
         # forward these to the mapping strategy
         self.mapping_strategy.register_split_indices(
@@ -1092,6 +1234,11 @@ class PerturbationDataset(Dataset):
 
     def _find_split_for_idx(self, idx: int) -> str | None:
         """Utility to find which split (train/val/test) this idx belongs to."""
+        if hasattr(self, "_index_to_split_code"):
+            code = int(self._index_to_split_code[idx])
+            if code >= 0:
+                return self._split_code_to_name[code]
+            return None
         for s in self.split_perturbed_indices.keys():
             if (
                 idx in self.split_perturbed_indices[s]
@@ -1156,9 +1303,13 @@ class PerturbationDataset(Dataset):
         # Copy the object's dict
         state = self.__dict__.copy()
         # Remove the open file object if it exists
-        if "h5_file" in state:
-            # We'll also store whether it's currently open, so that we can re-open later if needed
-            del state["h5_file"]
+        if self.h5_file is not None:
+            try:
+                self.h5_file.close()
+            except Exception:
+                pass
+        state.pop("h5_file", None)
+        state.pop("_h5_pid", None)
         return state
 
     def __setstate__(self, state):
@@ -1167,8 +1318,11 @@ class PerturbationDataset(Dataset):
         """
         # TODO-Abhi: remove this before release
         self.__dict__.update(state)
-        # This ensures that after we unpickle, we have a valid h5_file handle again
-        self.h5_file = h5py.File(self.h5_path, "r")
+        if not hasattr(self, "h5_open_kwargs"):
+            self.h5_open_kwargs = self._normalize_h5_open_kwargs(None)
+        self.h5_file = None
+        self._h5_pid = None
+        self._open_h5_file()
         self.metadata_cache = GlobalH5MetadataCache().get_cache(
             str(self.h5_path),
             self.pert_col,
@@ -1176,6 +1330,8 @@ class PerturbationDataset(Dataset):
             self.control_pert,
             self.batch_col,
         )
+        if not hasattr(self, "_index_to_split_code"):
+            self._init_split_index_cache()
 
     def _load_cell_barcodes(self) -> np.ndarray:
         """
