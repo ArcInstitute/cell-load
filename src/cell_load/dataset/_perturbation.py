@@ -272,6 +272,7 @@ class PerturbationDataset(Dataset):
         - cell_type: the cell type
         - batch: the batch (as an int or string)
         - batch_name: the batch name (as a string)
+        - dataset_name: the dataset name (from the TOML)
         - pert_cell_counts: the raw gene expression of the perturbed cell (if store_raw_expression is True)
         - ctrl_cell_counts: the raw gene expression of the control cell (if store_raw_basal is True)
         """
@@ -313,6 +314,7 @@ class PerturbationDataset(Dataset):
             "ctrl_cell_emb": ctrl_expr,
             "pert_emb": pert_onehot,
             "pert_name": pert_name,
+            "dataset_name": self.name,
             "batch_name": batch_name,
             "batch": batch_onehot,
             "cell_type": cell_type,
@@ -506,6 +508,7 @@ class PerturbationDataset(Dataset):
                 "ctrl_cell_emb": ctrl_expr,
                 "pert_emb": pert_onehot,
                 "pert_name": pert_name,
+                "dataset_name": self.name,
                 "batch_name": batch_name,
                 "batch": batch_onehot,
                 "cell_type": cell_type,
