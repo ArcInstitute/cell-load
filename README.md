@@ -287,6 +287,7 @@ filtered_adata.write_h5ad("filtered_data.h5ad")
 - **`should_yield_control_cells`**: Include control cells in output (default: `true`)
 - **`num_workers`**: Number of workers for data loading (default: 8)
 - **`batch_size`**: Batch size for training (default: 128)
+- **`val_subsample_fraction`**: Fraction of validation subsets to keep (e.g., `0.01` keeps ~1% of `val_datasets`)
 
 ### Usage
 

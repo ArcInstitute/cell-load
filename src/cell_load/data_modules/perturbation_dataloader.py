@@ -71,6 +71,7 @@ class PerturbationDataModule(LightningDataModule):
         cell_sentence_len: int = 512,
         cache_perturbation_control_pairs: bool = False,
         drop_last: bool = False,
+        val_subsample_fraction: float | None = None,
         additional_obs: list[str] | None = None,
         use_consecutive_loading: bool = False,
         h5_open_kwargs: dict | None = None,
@@ -95,6 +96,7 @@ class PerturbationDataModule(LightningDataModule):
             n_basal_samples: Number of control cells to sample per perturbed cell
             cache_perturbation_control_pairs: If True cache perturbation-control pairs at the start of training and reuse them.
             drop_last: Whether to drop the last sentence set if it is smaller than cell_sentence_len
+            val_subsample_fraction: Fraction of validation subsets to keep (subsamples self.val_datasets)
             use_consecutive_loading: Whether to form cell sets from consecutive indices for faster IO
             h5_open_kwargs: Optional kwargs to pass to h5py.File (e.g., rdcc_nbytes)
         """
@@ -112,6 +114,20 @@ class PerturbationDataModule(LightningDataModule):
         self.rng = np.random.default_rng(random_seed)
         self.drop_last = drop_last
         self.use_consecutive_loading = use_consecutive_loading
+        if val_subsample_fraction is None:
+            self.val_subsample_fraction = None
+        else:
+            try:
+                val_subsample_fraction = float(val_subsample_fraction)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "val_subsample_fraction must be a float in (0, 1]."
+                ) from exc
+            if not (0.0 < val_subsample_fraction <= 1.0):
+                raise ValueError(
+                    f"val_subsample_fraction must be in (0, 1]; got {val_subsample_fraction!r}"
+                )
+            self.val_subsample_fraction = val_subsample_fraction
 
         # H5 field names
         self.pert_col = pert_col
@@ -206,6 +222,7 @@ class PerturbationDataModule(LightningDataModule):
         """
         if len(self.train_datasets) == 0:
             self._setup_datasets()
+            self._apply_val_subsample()
             logger.info(
                 "Done! Train / Val / Test splits: %d / %d / %d",
                 len(self.train_datasets),
@@ -246,6 +263,7 @@ class PerturbationDataModule(LightningDataModule):
             "normalize_counts": self.normalize_counts,
             "store_raw_basal": self.store_raw_basal,
             "barcode": self.barcode,
+            "val_subsample_fraction": self.val_subsample_fraction,
             "additional_obs": self.additional_obs,
             "use_consecutive_loading": self.use_consecutive_loading,
             "h5_open_kwargs": self.h5_open_kwargs,
@@ -666,6 +684,29 @@ class PerturbationDataModule(LightningDataModule):
 
         if pbar is not None:
             pbar.close()
+
+    def _apply_val_subsample(self) -> None:
+        """Subsample validation datasets based on val_subsample_fraction."""
+        if self.val_subsample_fraction is None or len(self.val_datasets) == 0:
+            return
+
+        total = len(self.val_datasets)
+        keep = max(1, int(np.ceil(total * self.val_subsample_fraction)))
+        if keep >= total:
+            return
+
+        # Deterministic ordering for reproducibility.
+        ordered = sorted(
+            self.val_datasets,
+            key=lambda subset: (subset.dataset.name, str(subset.dataset.h5_path)),
+        )
+        self.val_datasets = ordered[:keep]
+        logger.info(
+            "Subsampled validation datasets: kept %d/%d (val_subsample_fraction=%.4f).",
+            keep,
+            total,
+            self.val_subsample_fraction,
+        )
 
     def _split_fewshot_celltype(
         self,
