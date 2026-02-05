@@ -71,7 +71,8 @@ class PerturbationDataset(Dataset):
             store_raw_basal: If True, include raw basal expression
             barcode: If True, include cell barcodes in output
             additional_obs: Optional list of obs column names to include in each sample
-            downsample: Fraction of counts to retain via binomial downsampling (only for output_space="all")
+            downsample: If <=1, fraction of counts to retain via binomial downsampling; if >1, target
+                read depth per cell (only for output_space="all")
             is_log1p: Whether raw counts in X are log1p-transformed (affects downsampling)
             cell_sentence_len: Optional sentence length for consecutive loading batches
             h5_open_kwargs: Optional kwargs to pass to h5py.File (e.g., rdcc_nbytes)
@@ -106,10 +107,10 @@ class PerturbationDataset(Dataset):
                 downsample = float(downsample)
             except (TypeError, ValueError) as exc:
                 raise ValueError(
-                    f"downsample must be a float in (0, 1]; got {downsample!r}"
+                    f"downsample must be a positive float; got {downsample!r}"
                 ) from exc
-            if not (0.0 < downsample <= 1.0):
-                raise ValueError(f"downsample must be in (0, 1]; got {downsample!r}")
+            if not (0.0 < downsample):
+                raise ValueError(f"downsample must be > 0; got {downsample!r}")
             self.downsample = downsample
         self.is_log1p = bool(is_log1p)
         self.cell_sentence_len = cell_sentence_len
@@ -758,31 +759,15 @@ class PerturbationDataset(Dataset):
         return sub_indices.astype(np.int64), sub_data.astype(np.float32)
 
     def _maybe_downsample_counts(self, counts: torch.Tensor) -> torch.Tensor:
-        if (
-            self.downsample is None
-            or self.downsample >= 1.0
-            or self.output_space != "all"
-        ):
+        if self.downsample is None or self.output_space != "all" or self.downsample == 1.0:
             return counts
 
         counts_np = counts.detach().cpu().numpy()
-        if self.is_log1p:
-            counts_lin = np.expm1(counts_np)
-            counts_int = np.rint(counts_lin).astype(np.int64)
-        else:
-            counts_int = counts_np.astype(np.int64)
-        counts_int = np.maximum(counts_int, 0)
-        sampled = self.rng.binomial(counts_int, self.downsample)
-        if self.is_log1p:
-            sampled = np.log1p(sampled)
+        sampled = self._maybe_downsample_counts_array(counts_np)
         return torch.tensor(sampled, dtype=torch.float32)
 
     def _maybe_downsample_counts_array(self, counts: np.ndarray) -> np.ndarray:
-        if (
-            self.downsample is None
-            or self.downsample >= 1.0
-            or self.output_space != "all"
-        ):
+        if self.downsample is None or self.output_space != "all" or self.downsample == 1.0:
             return counts
 
         if self.is_log1p:
@@ -791,7 +776,27 @@ class PerturbationDataset(Dataset):
         else:
             counts_int = counts.astype(np.int64)
         counts_int = np.maximum(counts_int, 0)
-        sampled = self.rng.binomial(counts_int, self.downsample)
+        if self.downsample < 1.0:
+            sampled = self.rng.binomial(counts_int, self.downsample)
+        else:
+            target = float(self.downsample)
+            if counts_int.ndim == 1:
+                total = counts_int.sum()
+                if total <= 0:
+                    sampled = counts_int
+                else:
+                    p = min(1.0, target / float(total))
+                    sampled = self.rng.binomial(counts_int, p)
+            else:
+                total = counts_int.sum(axis=1, keepdims=True).astype(np.float64)
+                p = np.divide(
+                    target,
+                    total,
+                    out=np.ones_like(total, dtype=np.float64),
+                    where=total > 0,
+                )
+                p = np.minimum(p, 1.0)
+                sampled = self.rng.binomial(counts_int, p)
         if self.is_log1p:
             sampled = np.log1p(sampled)
         return sampled.astype(np.float32)
@@ -804,7 +809,7 @@ class PerturbationDataset(Dataset):
         if (
             attrs.get("encoding-type") == "csr_matrix"
             and self.downsample is not None
-            and self.downsample < 1.0
+            and self.downsample != 1.0
             and self.output_space == "all"
         ):
             sub_indices, sub_data = self._fetch_gene_expression_csr_row(idx)
@@ -816,9 +821,12 @@ class PerturbationDataset(Dataset):
                 else:
                     counts_int = sub_data.astype(np.int64)
                 counts_int = np.maximum(counts_int, 0)
-                sampled = self.rng.binomial(counts_int, self.downsample).astype(
-                    np.float32
-                )
+                if self.downsample < 1.0:
+                    p = self.downsample
+                else:
+                    total = counts_int.sum()
+                    p = 1.0 if total <= 0 else min(1.0, self.downsample / float(total))
+                sampled = self.rng.binomial(counts_int, p).astype(np.float32)
                 if self.is_log1p:
                     sampled = np.log1p(sampled)
                 dense[sub_indices] = sampled

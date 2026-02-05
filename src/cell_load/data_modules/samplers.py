@@ -34,6 +34,7 @@ class PerturbationBatchSampler(Sampler):
         test: bool = False,
         use_batch: bool = False,
         use_consecutive_loading: bool = False,
+        downsample_cells: int | None = None,
         seed: int = 0,
         epoch: int = 0,
     ):
@@ -61,6 +62,7 @@ class PerturbationBatchSampler(Sampler):
 
         self.cell_sentence_len = cell_sentence_len
         self.drop_last = drop_last
+        self.downsample_cells = self._validate_downsample_cells(downsample_cells)
 
         # Setup distributed settings if distributed mode is enabled.
         self.distributed = False
@@ -165,6 +167,50 @@ class PerturbationBatchSampler(Sampler):
 
         return all_batches
 
+    def _validate_downsample_cells(self, downsample_cells: int | None) -> int | None:
+        if downsample_cells is None:
+            return None
+        if isinstance(downsample_cells, bool):
+            raise ValueError("downsample_cells must be a positive integer or None.")
+        if isinstance(downsample_cells, float):
+            if not downsample_cells.is_integer():
+                raise ValueError("downsample_cells must be a positive integer or None.")
+            downsample_cells = int(downsample_cells)
+        elif not isinstance(downsample_cells, (int, np.integer)):
+            raise ValueError("downsample_cells must be a positive integer or None.")
+        downsample_cells = int(downsample_cells)
+        if downsample_cells <= 0:
+            raise ValueError("downsample_cells must be a positive integer or None.")
+        return downsample_cells
+
+    def _apply_downsample_cells(
+        self, sentences: list[list[int]]
+    ) -> list[list[int]]:
+        if self.downsample_cells is None or not sentences:
+            return sentences
+
+        total = sum(len(sentence) for sentence in sentences)
+        if total <= self.downsample_cells:
+            return sentences
+
+        order = np.random.permutation(len(sentences))
+        selected: list[list[int]] = []
+        remaining = self.downsample_cells
+        for idx in order:
+            if remaining <= 0:
+                break
+            sentence = sentences[idx]
+            if len(sentence) <= remaining:
+                selected.append(sentence)
+                remaining -= len(sentence)
+            else:
+                if not self.drop_last and remaining > 0:
+                    selected.append(sentence[:remaining])
+                remaining = 0
+                break
+
+        return selected
+
     def _get_rank_sentences(self) -> list[list[int]]:
         """
         Get the subset of sentences that this rank should process.
@@ -247,11 +293,15 @@ class PerturbationBatchSampler(Sampler):
             group_indices = sorted_indices[start:end]
             np.random.shuffle(group_indices)
 
+            group_sentences = []
             for i in range(0, len(group_indices), self.cell_sentence_len):
                 sentence = group_indices[i : i + self.cell_sentence_len]
                 if len(sentence) < self.cell_sentence_len and self.drop_last:
                     continue
-                subset_batches.append(sentence.tolist())
+                group_sentences.append(sentence.tolist())
+
+            group_sentences = self._apply_downsample_cells(group_sentences)
+            subset_batches.extend(group_sentences)
 
         return subset_batches
 
@@ -295,11 +345,15 @@ class PerturbationBatchSampler(Sampler):
 
         subset_batches = []
         for segment in segments:
+            group_sentences = []
             for i in range(0, len(segment), self.cell_sentence_len):
                 sentence = segment[i : i + self.cell_sentence_len]
                 if len(sentence) < self.cell_sentence_len and self.drop_last:
                     continue
-                subset_batches.append(sentence.tolist())
+                group_sentences.append(sentence.tolist())
+
+            group_sentences = self._apply_downsample_cells(group_sentences)
+            subset_batches.extend(group_sentences)
 
         return subset_batches
 

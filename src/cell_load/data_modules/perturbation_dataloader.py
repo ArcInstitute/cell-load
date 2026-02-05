@@ -64,6 +64,7 @@ class PerturbationDataModule(LightningDataModule):
         embed_key: Literal["X_hvg", "X_state"] | None = None,
         output_space: Literal["gene", "all", "embedding"] = "gene",
         downsample: float | None = None,
+        downsample_cells: int | None = None,
         is_log1p: bool = False,
         basal_mapping_strategy: Literal["batch", "random"] = "random",
         n_basal_samples: int = 1,
@@ -90,7 +91,10 @@ class PerturbationDataModule(LightningDataModule):
             random_seed: For reproducible splits & sampling
             embed_key: Embedding key or matrix in the H5 file to use for feauturizing cells
             output_space: The output space for model predictions (gene, all genes, or embedding-only)
-            downsample: Fraction of counts to retain via binomial downsampling (only for output_space="all")
+            downsample: If <=1, fraction of counts to retain via binomial downsampling; if >1, target
+                read depth per cell (only for output_space="all")
+            downsample_cells: Max cells per (cell_type, perturbation[, batch]) group; if a group has
+                fewer cells it is unchanged
             is_log1p: Whether raw counts in X are log1p-transformed (auto-set if uns/log1p is present)
             basal_mapping_strategy: One of {"batch","random","nearest","ot"}
             n_basal_samples: Number of control cells to sample per perturbed cell
@@ -141,6 +145,23 @@ class PerturbationDataModule(LightningDataModule):
                 f"output_space must be one of 'gene', 'all', or 'embedding'; got {self.output_space!r}"
             )
         self.downsample = downsample
+        if downsample_cells is None:
+            self.downsample_cells = None
+        else:
+            if isinstance(downsample_cells, bool):
+                raise ValueError("downsample_cells must be a positive integer or None.")
+            if isinstance(downsample_cells, float):
+                if not downsample_cells.is_integer():
+                    raise ValueError(
+                        "downsample_cells must be a positive integer or None."
+                    )
+                downsample_cells = int(downsample_cells)
+            elif not isinstance(downsample_cells, (int, np.integer)):
+                raise ValueError("downsample_cells must be a positive integer or None.")
+            downsample_cells = int(downsample_cells)
+            if downsample_cells <= 0:
+                raise ValueError("downsample_cells must be a positive integer or None.")
+            self.downsample_cells = downsample_cells
         self.is_log1p = is_log1p
 
         # Sampling and mapping
@@ -250,6 +271,7 @@ class PerturbationDataModule(LightningDataModule):
             "embed_key": self.embed_key,
             "output_space": self.output_space,
             "downsample": self.downsample,
+            "downsample_cells": self.downsample_cells,
             "is_log1p": self.is_log1p,
             "basal_mapping_strategy": self.basal_mapping_strategy,
             "n_basal_samples": self.n_basal_samples,
@@ -449,6 +471,7 @@ class PerturbationDataModule(LightningDataModule):
             test=test,
             use_batch=use_batch,
             use_consecutive_loading=self.use_consecutive_loading,
+            downsample_cells=self.downsample_cells,
         )
 
         return DataLoader(
