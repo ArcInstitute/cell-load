@@ -150,9 +150,7 @@ class RandomMappingStrategy(BaseMappingStrategy):
                     if pool_arr.size == 0:
                         control_assignments = []
                     else:
-                        repeats = int(
-                            np.ceil(total_assignments_needed / pool_arr.size)
-                        )
+                        repeats = int(np.ceil(total_assignments_needed / pool_arr.size))
                         control_assignments = np.tile(pool_arr, repeats)[
                             :total_assignments_needed
                         ].tolist()

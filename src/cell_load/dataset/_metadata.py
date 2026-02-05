@@ -42,7 +42,9 @@ class MetadataConcatDataset(ConcatDataset):
         for out_pos, idx in enumerate(indices):
             dataset_idx = bisect_right(self.cumulative_sizes, idx)
             sample_idx = (
-                idx if dataset_idx == 0 else idx - self.cumulative_sizes[dataset_idx - 1]
+                idx
+                if dataset_idx == 0
+                else idx - self.cumulative_sizes[dataset_idx - 1]
             )
             grouped.setdefault(dataset_idx, []).append((out_pos, sample_idx))
 

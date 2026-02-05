@@ -28,7 +28,12 @@ logger = logging.getLogger(__name__)
 
 
 def _worker_init_fn(worker_id: int) -> None:
-    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    for var in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    ):
         os.environ.setdefault(var, "1")
     try:
         torch.set_num_threads(1)

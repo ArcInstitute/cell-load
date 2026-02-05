@@ -155,10 +155,14 @@ class PerturbationDataset(Dataset):
         self._index_to_split_code = np.full(self.n_cells, -1, dtype=np.int8)
         for split, indices in self.split_perturbed_indices.items():
             if indices:
-                self._index_to_split_code[list(indices)] = self._split_name_to_code[split]
+                self._index_to_split_code[list(indices)] = self._split_name_to_code[
+                    split
+                ]
         for split, indices in self.split_control_indices.items():
             if indices:
-                self._index_to_split_code[list(indices)] = self._split_name_to_code[split]
+                self._index_to_split_code[list(indices)] = self._split_name_to_code[
+                    split
+                ]
 
     @staticmethod
     def _parse_env_int(name: str, default: int) -> int:
@@ -183,9 +187,7 @@ class PerturbationDataset(Dataset):
             return default
 
     def _default_h5_open_kwargs(self) -> dict:
-        rdcc_nbytes = self._parse_env_int(
-            "CELL_LOAD_H5_RDCC_NBYTES", 64 * 1024 * 1024
-        )
+        rdcc_nbytes = self._parse_env_int("CELL_LOAD_H5_RDCC_NBYTES", 64 * 1024 * 1024)
         rdcc_nslots = self._parse_env_int("CELL_LOAD_H5_RDCC_NSLOTS", 1_000_003)
         rdcc_w0 = self._parse_env_float("CELL_LOAD_H5_RDCC_W0", 0.75)
         kwargs = {
@@ -418,9 +420,8 @@ class PerturbationDataset(Dataset):
                 raise ValueError(
                     f"No control cells found for cell type '{self.get_cell_type(missing_file_idx)}'"
                 )
-            if (
-                (self.store_raw_basal and self.output_space != "embedding")
-                or (self.barcode and self.cell_barcodes is not None)
+            if (self.store_raw_basal and self.output_space != "embedding") or (
+                self.barcode and self.cell_barcodes is not None
             ):
                 raise ValueError(
                     f"No control cells found for cell type '{self.get_cell_type(missing_file_idx)}'"
@@ -759,7 +760,11 @@ class PerturbationDataset(Dataset):
         return sub_indices.astype(np.int64), sub_data.astype(np.float32)
 
     def _maybe_downsample_counts(self, counts: torch.Tensor) -> torch.Tensor:
-        if self.downsample is None or self.output_space != "all" or self.downsample == 1.0:
+        if (
+            self.downsample is None
+            or self.output_space != "all"
+            or self.downsample == 1.0
+        ):
             return counts
 
         counts_np = counts.detach().cpu().numpy()
@@ -767,7 +772,11 @@ class PerturbationDataset(Dataset):
         return torch.tensor(sampled, dtype=torch.float32)
 
     def _maybe_downsample_counts_array(self, counts: np.ndarray) -> np.ndarray:
-        if self.downsample is None or self.output_space != "all" or self.downsample == 1.0:
+        if (
+            self.downsample is None
+            or self.output_space != "all"
+            or self.downsample == 1.0
+        ):
             return counts
 
         if self.is_log1p:
@@ -861,7 +870,7 @@ class PerturbationDataset(Dataset):
         block = np.asarray(ds[row_start : row_end + 1], dtype=np.float32)
         if block.ndim == 1:
             block = block[:, None]
-        dense_sorted[run_start:len(sorted_rows)] = block
+        dense_sorted[run_start : len(sorted_rows)] = block
 
         inv_order = np.empty_like(order)
         inv_order[order] = np.arange(len(order))
@@ -961,9 +970,9 @@ class PerturbationDataset(Dataset):
             ptr_end = int(indptr_slice[offset + 1] - base_ptr)
             if ptr_end <= ptr_start:
                 continue
-            dense_sorted[start + offset, block_indices[ptr_start:ptr_end]] = (
-                block_data[ptr_start:ptr_end]
-            )
+            dense_sorted[start + offset, block_indices[ptr_start:ptr_end]] = block_data[
+                ptr_start:ptr_end
+            ]
 
     @lru_cache(maxsize=10000)
     def fetch_obsm_expression(self, idx: int, key: str) -> torch.Tensor:

@@ -183,9 +183,7 @@ class PerturbationBatchSampler(Sampler):
             raise ValueError("downsample_cells must be a positive integer or None.")
         return downsample_cells
 
-    def _apply_downsample_cells(
-        self, sentences: list[list[int]]
-    ) -> list[list[int]]:
+    def _apply_downsample_cells(self, sentences: list[list[int]]) -> list[list[int]]:
         if self.downsample_cells is None or not sentences:
             return sentences
 
