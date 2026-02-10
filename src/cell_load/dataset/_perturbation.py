@@ -979,7 +979,9 @@ class PerturbationDataset(Dataset):
         inv_order[order] = np.arange(len(order))
         return dense_sorted[inv_order]
 
-    def _fetch_csr_row(self, matrix_group: h5py.Group, idx: int, n_cols: int) -> np.ndarray:
+    def _fetch_csr_row(
+        self, matrix_group: h5py.Group, idx: int, n_cols: int
+    ) -> np.ndarray:
         if not all(k in matrix_group for k in ("indptr", "data", "indices")):
             raise KeyError(
                 "CSR group must contain 'indptr', 'data', and 'indices' datasets."
@@ -1140,7 +1142,9 @@ class PerturbationDataset(Dataset):
             row_data = self._fetch_csr_row(matrix, int(idx), n_cols)
             return torch.from_numpy(row_data)
 
-        raise TypeError(f"Unsupported obsm storage for key '{key}': {type(matrix).__name__}")
+        raise TypeError(
+            f"Unsupported obsm storage for key '{key}': {type(matrix).__name__}"
+        )
 
     def get_gene_names(self, output_space="all") -> list[str]:
         """
