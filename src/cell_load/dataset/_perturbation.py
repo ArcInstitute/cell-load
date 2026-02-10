@@ -614,7 +614,9 @@ class PerturbationDataset(Dataset):
         """
         Get the feature dimensionality of obsm data with the specified key (e.g., 'X_uce').
         """
-        return self.h5_file[f"obsm/{key}"].shape[1]
+        matrix = self._get_obsm_matrix(key)
+        _, n_cols = self._get_matrix_shape(matrix)
+        return n_cols
 
     def get_cell_type(self, idx):
         """
@@ -876,6 +878,135 @@ class PerturbationDataset(Dataset):
         inv_order[order] = np.arange(len(order))
         return dense_sorted[inv_order]
 
+    @staticmethod
+    def _is_csr_group(obj) -> bool:
+        return isinstance(obj, h5py.Group) and (
+            obj.attrs.get("encoding-type") == "csr_matrix"
+            or all(k in obj for k in ("data", "indices", "indptr"))
+        )
+
+    def _infer_n_cols_from_indices(self, indices_ds) -> int:
+        # Rare fallback for malformed files that omit CSR shape metadata.
+        total_nnz = int(indices_ds.shape[0])
+        if total_nnz == 0:
+            return 0
+
+        max_col = -1
+        chunk = 1_000_000
+        for start in range(0, total_nnz, chunk):
+            stop = min(start + chunk, total_nnz)
+            block = np.asarray(indices_ds[start:stop], dtype=np.int64)
+            if block.size == 0:
+                continue
+            local_max = int(block.max())
+            if local_max > max_col:
+                max_col = local_max
+        return max_col + 1
+
+    def _get_matrix_shape(self, matrix_obj) -> tuple[int, int]:
+        if isinstance(matrix_obj, h5py.Dataset):
+            if len(matrix_obj.shape) == 1:
+                return int(matrix_obj.shape[0]), 1
+            if len(matrix_obj.shape) >= 2:
+                return int(matrix_obj.shape[0]), int(matrix_obj.shape[1])
+            raise ValueError("Dataset has invalid rank for matrix-like data.")
+
+        if self._is_csr_group(matrix_obj):
+            shape_attr = matrix_obj.attrs.get("shape")
+            if shape_attr is not None:
+                shape_arr = np.asarray(shape_attr, dtype=np.int64).reshape(-1)
+                if shape_arr.size >= 2:
+                    return int(shape_arr[0]), int(shape_arr[1])
+
+            if "indptr" not in matrix_obj:
+                raise KeyError("CSR group is missing required 'indptr' dataset.")
+            n_rows = int(matrix_obj["indptr"].shape[0]) - 1
+
+            if "indices" not in matrix_obj:
+                raise KeyError("CSR group is missing required 'indices' dataset.")
+            n_cols = self._infer_n_cols_from_indices(matrix_obj["indices"])
+            return n_rows, n_cols
+
+        raise TypeError(
+            f"Unsupported matrix storage type: {type(matrix_obj).__name__}. "
+            "Expected h5py.Dataset or CSR-encoded h5py.Group."
+        )
+
+    def _fetch_csr_matrix_batch(
+        self, matrix_group: h5py.Group, indices: np.ndarray, n_cols: int
+    ) -> np.ndarray:
+        if indices.size == 0:
+            return np.empty((0, n_cols), dtype=np.float32)
+
+        if not all(k in matrix_group for k in ("indptr", "data", "indices")):
+            raise KeyError(
+                "CSR group must contain 'indptr', 'data', and 'indices' datasets."
+            )
+
+        indptr_ds = matrix_group["indptr"]
+        data_ds = matrix_group["data"]
+        indices_ds = matrix_group["indices"]
+
+        order = np.argsort(indices)
+        sorted_rows = indices[order]
+        dense_sorted = np.zeros((len(sorted_rows), n_cols), dtype=np.float32)
+
+        run_start = 0
+        for i in range(1, len(sorted_rows)):
+            if sorted_rows[i] != sorted_rows[i - 1] + 1:
+                self._fill_dense_run(
+                    sorted_rows,
+                    run_start,
+                    i,
+                    dense_sorted,
+                    indptr_ds,
+                    data_ds,
+                    indices_ds,
+                )
+                run_start = i
+
+        self._fill_dense_run(
+            sorted_rows,
+            run_start,
+            len(sorted_rows),
+            dense_sorted,
+            indptr_ds,
+            data_ds,
+            indices_ds,
+        )
+
+        inv_order = np.empty_like(order)
+        inv_order[order] = np.arange(len(order))
+        return dense_sorted[inv_order]
+
+    def _fetch_csr_row(self, matrix_group: h5py.Group, idx: int, n_cols: int) -> np.ndarray:
+        if not all(k in matrix_group for k in ("indptr", "data", "indices")):
+            raise KeyError(
+                "CSR group must contain 'indptr', 'data', and 'indices' datasets."
+            )
+
+        indptr_ds = matrix_group["indptr"]
+        data_ds = matrix_group["data"]
+        indices_ds = matrix_group["indices"]
+
+        start_ptr = int(indptr_ds[idx])
+        end_ptr = int(indptr_ds[idx + 1])
+
+        dense = np.zeros(n_cols, dtype=np.float32)
+        if end_ptr <= start_ptr:
+            return dense
+
+        row_data = np.asarray(data_ds[start_ptr:end_ptr], dtype=np.float32)
+        row_indices = np.asarray(indices_ds[start_ptr:end_ptr], dtype=np.int64)
+        dense[row_indices] = row_data
+        return dense
+
+    def _get_obsm_matrix(self, key: str):
+        path = f"/obsm/{key}"
+        if path not in self.h5_file:
+            raise KeyError(f"obsm key '{key}' not found in {self.h5_path}")
+        return self.h5_file[path]
+
     def _fetch_gene_expression_batch(self, indices: np.ndarray) -> torch.Tensor:
         """
         Fetch raw gene counts for multiple indices at once (CSR fast path).
@@ -933,11 +1064,20 @@ class PerturbationDataset(Dataset):
     def _fetch_obsm_expression_batch(
         self, indices: np.ndarray, key: str
     ) -> torch.Tensor:
-        ds = self.h5_file[f"/obsm/{key}"]
-        n_cols = int(ds.shape[1]) if ds.ndim > 1 else 1
+        matrix = self._get_obsm_matrix(key)
+        _, n_cols = self._get_matrix_shape(matrix)
         if indices.size == 0:
             return torch.empty((0, n_cols), dtype=torch.float32)
-        dense = self._fetch_dense_matrix_batch(ds, indices, n_cols)
+
+        if isinstance(matrix, h5py.Dataset):
+            dense = self._fetch_dense_matrix_batch(matrix, indices, n_cols)
+        elif self._is_csr_group(matrix):
+            dense = self._fetch_csr_matrix_batch(matrix, indices, n_cols)
+        else:
+            raise TypeError(
+                f"Unsupported obsm storage for key '{key}': {type(matrix).__name__}"
+            )
+
         return torch.from_numpy(dense)
 
     def _fill_dense_run(
@@ -985,8 +1125,22 @@ class PerturbationDataset(Dataset):
         Returns:
             1D FloatTensor of that embedding
         """
-        row_data = self.h5_file[f"/obsm/{key}"][idx]
-        return torch.tensor(row_data, dtype=torch.float32)
+        matrix = self._get_obsm_matrix(key)
+        _, n_cols = self._get_matrix_shape(matrix)
+
+        if isinstance(matrix, h5py.Dataset):
+            row_data = np.asarray(matrix[idx], dtype=np.float32)
+            if row_data.ndim == 0:
+                row_data = np.asarray([row_data], dtype=np.float32)
+            elif row_data.ndim > 1:
+                row_data = row_data.reshape(-1)
+            return torch.from_numpy(row_data)
+
+        if self._is_csr_group(matrix):
+            row_data = self._fetch_csr_row(matrix, int(idx), n_cols)
+            return torch.from_numpy(row_data)
+
+        raise TypeError(f"Unsupported obsm storage for key '{key}': {type(matrix).__name__}")
 
     def get_gene_names(self, output_space="all") -> list[str]:
         """
@@ -1282,13 +1436,13 @@ class PerturbationDataset(Dataset):
                     indices = self.h5_file["X/indices"][:]
                     n_cols = indices.max() + 1
                 except KeyError:
-                    n_cols = self.h5_file["obsm/X_hvg"].shape[1]
+                    n_cols = self._get_matrix_shape(self.h5_file["obsm/X_hvg"])[1]
         return n_cols
 
     def get_num_hvgs(self) -> int:
         """Return the number of highly variable genes in the obsm matrix."""
         try:
-            return self.h5_file["obsm/X_hvg"].shape[1]
+            return self._get_matrix_shape(self.h5_file["obsm/X_hvg"])[1]
         except:
             return 0
 
@@ -1303,7 +1457,7 @@ class PerturbationDataset(Dataset):
                 n_rows = len(indptr) - 1
             except Exception:
                 # if this also fails, fall back to obsm
-                n_rows = self.h5_file["obsm/X_hvg"].shape[0]
+                n_rows = self._get_matrix_shape(self.h5_file["obsm/X_hvg"])[0]
         return n_rows
 
     def get_pert_name(self, idx: int) -> str:
