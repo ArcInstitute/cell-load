@@ -41,10 +41,13 @@ class RandomMappingStrategy(BaseMappingStrategy):
 
         if self.cache_perturbation_control_pairs:
             logger.info(
-                f"RandomMappingStrategy initialized with cache_perturbation_control_pairs=True (random_state={random_state}, n_basal_samples={n_basal_samples})"
+                "RandomMappingStrategy initialized with "
+                "cache_perturbation_control_pairs=True "
+                f"(random_state={random_state}, n_basal_samples={n_basal_samples})"
             )
             logger.info(
-                f"Warning: If using n_basal_samples > 1, use the original behavior by setting cache_perturbation_control_pairs=False"
+                "Warning: If using n_basal_samples > 1, use the original behavior "
+                "by setting cache_perturbation_control_pairs=False"
             )
         if self.use_consecutive_loading:
             if self.cache_perturbation_control_pairs:
@@ -114,7 +117,9 @@ class RandomMappingStrategy(BaseMappingStrategy):
         build_mapping = self.cache_perturbation_control_pairs
         if build_mapping:
             logger.info(
-                f"Creating cached perturbation-control mapping for split '{split}' with {len(perturbed_indices)} perturbed cells and {len(control_indices)} control cells"
+                "Creating cached perturbation-control mapping for split "
+                f"'{split}' with {len(perturbed_indices)} perturbed cells and "
+                f"{len(control_indices)} control cells"
             )
 
         # Create a fixed mapping from perturbed_idx -> list of control indices
@@ -161,7 +166,9 @@ class RandomMappingStrategy(BaseMappingStrategy):
 
                     # Ensure we have enough controls for all assignments
                     assert len(shuffled_pool) >= total_assignments_needed, (
-                        f"Need {total_assignments_needed} controls for {cell_type} / {pert_name} but only have {len(shuffled_pool)}"
+                        f"Need {total_assignments_needed} controls for "
+                        f"{cell_type} / {pert_name} but only have "
+                        f"{len(shuffled_pool)}"
                     )
 
                     # Assign control cells without replacement to this cell type / perturbation
@@ -176,7 +183,8 @@ class RandomMappingStrategy(BaseMappingStrategy):
                     ]
 
             logger.info(
-                f"Split '{split}' - Successfully created cached mapping for {len(self.split_control_mapping[split])} perturbed cells"
+                f"Split '{split}' - Successfully created cached mapping for "
+                f"{len(self.split_control_mapping[split])} perturbed cells"
             )
 
     def get_control_indices(
@@ -195,7 +203,8 @@ class RandomMappingStrategy(BaseMappingStrategy):
             control_idxs = self.split_control_mapping[split][perturbed_idx]
             if len(control_idxs) == 0:
                 raise ValueError(
-                    f"No control cells found in RandomMappingStrategy for cell type '{dataset.get_cell_type(perturbed_idx)}'"
+                    "No control cells found in RandomMappingStrategy for "
+                    f"cell type '{dataset.get_cell_type(perturbed_idx)}'"
                 )
             return np.array(control_idxs)
         if self.use_consecutive_loading:
@@ -203,7 +212,8 @@ class RandomMappingStrategy(BaseMappingStrategy):
             pool = self.split_control_pool[split].get(pert_cell_type, None)
             if not pool:
                 raise ValueError(
-                    f"No control cells found in RandomMappingStrategy for cell type '{dataset.get_cell_type(perturbed_idx)}'"
+                    "No control cells found in RandomMappingStrategy for "
+                    f"cell type '{dataset.get_cell_type(perturbed_idx)}'"
                 )
             return self._sample_consecutive_controls(pool, self.n_basal_samples)
         else:
@@ -212,7 +222,8 @@ class RandomMappingStrategy(BaseMappingStrategy):
             pool = self.split_control_pool[split].get(pert_cell_type, None)
             if not pool:
                 raise ValueError(
-                    f"No control cells found in RandomMappingStrategy for cell type '{dataset.get_cell_type(perturbed_idx)}'"
+                    "No control cells found in RandomMappingStrategy for "
+                    f"cell type '{dataset.get_cell_type(perturbed_idx)}'"
                 )
             control_idxs = self.rng.choices(pool, k=self.n_basal_samples)
             return np.array(control_idxs)

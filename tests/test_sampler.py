@@ -133,7 +133,7 @@ class TestDistributedPerturbationBatchSampler:
         # Check distributed initialization
         for i, result in enumerate(results):
             assert result["rank"] == i, f"Expected rank {i}, got {result['rank']}"
-            assert result["distributed"] == True, f"Process {i} not in distributed mode"
+            assert result["distributed"], f"Process {i} not in distributed mode"
             assert result["num_replicas"] == 2, f"Process {i} incorrect num_replicas"
             assert result["sampler_rank"] == i, f"Process {i} incorrect sampler rank"
 
@@ -186,7 +186,7 @@ class TestDistributedPerturbationBatchSampler:
         for result in results:
             first_batches.append(np.array(result["batch_data"][0]))
 
-        assert np.array_equal(first_batches[0], first_batches[1]) == False, (
+        assert not np.array_equal(first_batches[0], first_batches[1]), (
             "Processes generated the same first batch"
         )
 
@@ -202,7 +202,7 @@ class TestDistributedPerturbationBatchSampler:
         for result in results:
             ep0_batch = result["batch_data"][0]
             ep1_batch = result["ep1_batch_data"][0]
-            assert np.array_equal(ep0_batch, ep1_batch) == False, (
+            assert not np.array_equal(ep0_batch, ep1_batch), (
                 f"Epoch 1 batches are the same as epoch 0 for process {result['rank']}"
             )
 
@@ -218,7 +218,7 @@ class TestDistributedPerturbationBatchSampler:
         for result in results:
             ep0_batch = result["batch_data"][-1]
             ep1_batch = result["ep1_batch_data"][-1]
-            assert np.array_equal(ep0_batch, ep1_batch) == False, (
+            assert not np.array_equal(ep0_batch, ep1_batch), (
                 f"Last batch is the same every epoch for process {result['rank']}"
             )
 
@@ -264,7 +264,7 @@ class TestSingleProcessCompatibility:
             sampler._create_batches()
 
             # Check non-distributed mode
-            assert sampler.distributed == False, (
+            assert not sampler.distributed, (
                 "Sampler should be in non-distributed mode"
             )
             assert sampler.num_replicas == 1, (

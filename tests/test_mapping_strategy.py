@@ -1,10 +1,7 @@
 import numpy as np
 import pytest
-import torch
-from pathlib import Path
 
 from cell_load.mapping_strategies import RandomMappingStrategy, BatchMappingStrategy
-from cell_load.dataset import PerturbationDataset
 from conftest import create_toml_config, make_datamodule
 
 
@@ -134,7 +131,7 @@ class TestRandomMappingStrategy:
         """Test RandomMappingStrategy initialization with default parameters."""
         strategy = RandomMappingStrategy()
 
-        assert strategy.cache_perturbation_control_pairs == False
+        assert not strategy.cache_perturbation_control_pairs
 
     def test_initialization_custom_parameters(self):
         """Test RandomMappingStrategy initialization with custom parameters."""
@@ -148,7 +145,7 @@ class TestRandomMappingStrategy:
         assert strategy.name == "custom_random"  # type: ignore
         assert strategy.random_state == 123
         assert strategy.n_basal_samples == 3
-        assert strategy.cache_perturbation_control_pairs == True
+        assert strategy.cache_perturbation_control_pairs
 
     def test_mapping_creation_at_start_cached(
         self, mapping_strategy_cached, indices_data
@@ -172,7 +169,7 @@ class TestRandomMappingStrategy:
         ) + len(control_indices)
 
     def test_no_mapping_regeneration_cached(self, dataloader_cached):
-        """Check to make sure perturbation-control mappings are not being generated every epoch when caching is enabled."""
+        """Check mappings are not regenerated every epoch when caching is enabled."""
         loader_cached, dm_cached, toml_path_cached = dataloader_cached
 
         # Get the mapping strategies from the datasets
@@ -258,7 +255,7 @@ class TestRandomMappingStrategy:
         assert contains_control_cells and contains_perturbed_cells
 
     def test_random_shuffling_on_initialization(self, indices_data):
-        """Make sure the shuffling of cells on initialization is random, so initializing it twice leads to different mappings."""
+        """Make sure initialization shuffling differs across different random states."""
         dataset = indices_data["dataset"]
         control_indices = indices_data["control_indices"]
         perturbed_indices = indices_data["perturbed_indices"]

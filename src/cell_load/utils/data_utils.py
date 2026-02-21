@@ -303,7 +303,7 @@ def is_on_target_knockdown(
 
     try:
         control_mean = _mean(X[control_cells, gene_idx])
-    except:
+    except Exception:
         control_cells = (adata.obs[perturbation_column] == control_label).values
         control_mean = _mean(X[control_cells, gene_idx])
 
@@ -316,7 +316,7 @@ def is_on_target_knockdown(
 
     try:
         perturbed_mean = _mean(X[perturbed_cells, gene_idx])
-    except:
+    except Exception:
         perturbed_cells = (adata.obs[perturbation_column] == target_gene).values
         perturbed_mean = _mean(X[perturbed_cells, gene_idx])
 
@@ -386,7 +386,7 @@ def filter_on_target_knockdown(
         if pert not in control_mean_cache:
             try:
                 ctrl_mean = _mean(X[control_cells, gene_idx])
-            except:
+            except Exception:
                 print(control_cells.shape, control_cells)
                 print(gene_idx)
                 print(X[control_cells, gene_idx].shape)

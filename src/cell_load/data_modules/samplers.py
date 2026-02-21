@@ -154,7 +154,8 @@ class PerturbationBatchSampler(Sampler):
 
         if self.distributed:
             logger.info(
-                f"Rank {self.rank}: Of {len(rank_sentences)} sentences, {num_full} were full and {num_partial} were partial."
+                f"Rank {self.rank}: Of {len(rank_sentences)} sentences, "
+                f"{num_full} were full and {num_partial} were partial."
             )
         else:
             logger.info(

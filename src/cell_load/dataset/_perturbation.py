@@ -391,7 +391,8 @@ class PerturbationDataset(Dataset):
                 )
                 if not pool:
                     raise ValueError(
-                        f"No control cells found in RandomMappingStrategy for cell type '{self.get_cell_type(sentence_idx[0])}'"
+                        "No control cells found in RandomMappingStrategy for "
+                        f"cell type '{self.get_cell_type(sentence_idx[0])}'"
                     )
                 block = self.mapping_strategy._sample_consecutive_controls(
                     pool, len(sentence_idx)
@@ -1170,7 +1171,7 @@ class PerturbationDataset(Dataset):
             else:
                 try:
                     raw = self.h5_file["var/gene_name"][:]
-                except:
+                except KeyError:
                     raw = self.h5_file["var/gene_name_index"][:]
             if (
                 output_space == "gene"
@@ -1435,7 +1436,7 @@ class PerturbationDataset(Dataset):
         """Return the number of highly variable genes in the obsm matrix."""
         try:
             return self._get_matrix_shape(self.h5_file["obsm/X_hvg"])[1]
-        except:
+        except Exception:
             return 0
 
     def _get_num_cells(self) -> int:

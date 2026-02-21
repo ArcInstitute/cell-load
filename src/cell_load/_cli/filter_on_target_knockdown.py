@@ -7,7 +7,6 @@ from pathlib import Path
 
 import anndata
 import scanpy as sc
-import numpy as np
 
 
 def preprocess_state_paper(adata_pp: anndata.AnnData) -> anndata.AnnData:
@@ -169,7 +168,9 @@ def main():
             if not all(index_values == column_values):
                 # Rename the index to avoid conflict
                 print(
-                    f"  - Fixing var index name conflict: {filtered_adata.var.index.name} -> {filtered_adata.var.index.name}_index"
+                    "  - Fixing var index name conflict: "
+                    f"{filtered_adata.var.index.name} -> "
+                    f"{filtered_adata.var.index.name}_index"
                 )
                 filtered_adata.var.index.name = f"{filtered_adata.var.index.name}_index"
 

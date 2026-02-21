@@ -98,9 +98,12 @@ data.kwargs.output_space=gene
 data.kwargs.basal_mapping_strategy=random
 data.kwargs.n_basal_samples=1
 data.kwargs.should_yield_control_cells=true
+data.kwargs.val_subsample_batches=32  # STATE/Hydra knob to reduce validation batches
+data.kwargs.use_consecutive_loading=true  # Faster IO, especially with output_space=all
 ```
 
 These plug in as hydra configurable settings in the [STATE](https://github.com/ArcInstitute/state) repository.
+When `use_consecutive_loading=true`, data should be grouped by `(cell_type, perturbation/condition)` so each pair is contiguous. For example, avoid sequences like `(ct1, pert1), (ct1, pert2), (ct1, pert1)`.
 
 ### 3. Standalone Programmatic Usage
 
@@ -124,6 +127,8 @@ dm = PerturbationDataModule(
     basal_mapping_strategy="random",
     n_basal_samples=1,
     should_yield_control_cells=True,
+    val_subsample_fraction=0.25,
+    use_consecutive_loading=True,
     batch_size=128,
 )
 dm.setup()
@@ -287,7 +292,9 @@ filtered_adata.write_h5ad("filtered_data.h5ad")
 - **`should_yield_control_cells`**: Include control cells in output (default: `true`)
 - **`num_workers`**: Number of workers for data loading (default: 8)
 - **`batch_size`**: Batch size for training (default: 128)
+- **`val_subsample_batches`**: STATE/Hydra parameter to subsample validation batches. In standalone `cell-load`, use `val_subsample_fraction`.
 - **`val_subsample_fraction`**: Fraction of validation subsets to keep (e.g., `0.01` keeps ~1% of `val_datasets`)
+- **`use_consecutive_loading`**: Groups batches by consecutive indices for faster H5 reads (especially for `output_space="all"`). Requires data grouped contiguously by `(cell_type, perturbation/condition)`.
 
 ### Usage
 

@@ -103,7 +103,8 @@ class PerturbationDataModule(LightningDataModule):
             is_log1p: Whether raw counts in X are log1p-transformed (default True; auto-set if uns/log1p is present)
             basal_mapping_strategy: One of {"batch","random","nearest","ot"}
             n_basal_samples: Number of control cells to sample per perturbed cell
-            cache_perturbation_control_pairs: If True cache perturbation-control pairs at the start of training and reuse them.
+            cache_perturbation_control_pairs: If True, cache perturbation-control
+                pairs at the start of training and reuse them.
             drop_last: Whether to drop the last sentence set if it is smaller than cell_sentence_len
             val_subsample_fraction: Fraction of validation subsets to keep (subsamples self.val_datasets)
             use_consecutive_loading: Whether to form cell sets from consecutive indices for faster IO
