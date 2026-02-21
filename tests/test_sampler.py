@@ -265,9 +265,7 @@ class TestSingleProcessCompatibility:
             sampler._create_batches()
 
             # Check non-distributed mode
-            assert not sampler.distributed, (
-                "Sampler should be in non-distributed mode"
-            )
+            assert not sampler.distributed, "Sampler should be in non-distributed mode"
             assert sampler.num_replicas == 1, (
                 "Should have 1 replica in non-distributed mode"
             )
@@ -298,7 +296,9 @@ class TestSingleProcessCompatibility:
             toml_path.unlink()
 
 
-def _write_single_celltype_dataset(root: Path, perturbation_sequence: list[str]) -> None:
+def _write_single_celltype_dataset(
+    root: Path, perturbation_sequence: list[str]
+) -> None:
     import anndata as ad
     import pandas as pd
 

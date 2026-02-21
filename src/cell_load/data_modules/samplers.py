@@ -245,9 +245,7 @@ class PerturbationBatchSampler(Sampler):
 
         return rank_sentences
 
-    def _format_group_key(
-        self, cache: H5MetadataCache, key: tuple[int, ...]
-    ) -> str:
+    def _format_group_key(self, cache: H5MetadataCache, key: tuple[int, ...]) -> str:
         if self.use_batch:
             batch_code, cell_code, pert_code = key
             batch_name = cache.batch_categories[batch_code]
