@@ -1214,7 +1214,7 @@ class PerturbationDataset(Dataset):
     # Static methods
     ##############################
     @staticmethod
-    def collate_fn(batch, int_counts=False):
+    def collate_fn(batch, exp_counts=False):
         """
         Optimized collate function with preallocated lists.
         Safely handles normalization when vectors sum to zero.
@@ -1287,41 +1287,29 @@ class PerturbationDataset(Dataset):
             is_discrete = suspected_discrete_torch(pert_cell_counts)
             is_log = suspected_log_torch(pert_cell_counts)
             already_logged = (not is_discrete) and is_log
+            if exp_counts:
+                if already_logged:
+                    pert_cell_counts = torch.expm1(pert_cell_counts)
+                pert_cell_counts = torch.nan_to_num(
+                    pert_cell_counts, nan=0.0, posinf=0.0, neginf=0.0
+                )
+                pert_cell_counts = pert_cell_counts.clamp_min(0).round().to(torch.int32)
             batch_dict["pert_cell_counts"] = pert_cell_counts
-
-            # if already_logged:  # counts are already log transformed
-            #     if (
-            #         int_counts
-            #     ):  # if the user wants to model with raw counts, don't log transform
-            #         batch_dict["pert_cell_counts"] = torch.expm1(pert_cell_counts)
-            #     else:
-            #         batch_dict["pert_cell_counts"] = pert_cell_counts
-            # else:
-            #     if int_counts:
-            #         batch_dict["pert_cell_counts"] = pert_cell_counts
-            #     else:
-            #         batch_dict["pert_cell_counts"] = torch.log1p(pert_cell_counts)
 
         if has_ctrl_cell_counts:
             ctrl_cell_counts = torch.stack(ctrl_cell_counts_list)
 
-            is_discrete = suspected_discrete_torch(pert_cell_counts)
-            is_log = suspected_log_torch(pert_cell_counts)
+            is_discrete = suspected_discrete_torch(ctrl_cell_counts)
+            is_log = suspected_log_torch(ctrl_cell_counts)
             already_logged = (not is_discrete) and is_log
+            if exp_counts:
+                if already_logged:
+                    ctrl_cell_counts = torch.expm1(ctrl_cell_counts)
+                ctrl_cell_counts = torch.nan_to_num(
+                    ctrl_cell_counts, nan=0.0, posinf=0.0, neginf=0.0
+                )
+                ctrl_cell_counts = ctrl_cell_counts.clamp_min(0).round().to(torch.int32)
             batch_dict["ctrl_cell_counts"] = ctrl_cell_counts
-
-            # if already_logged:  # counts are already log transformed
-            #     if (
-            #         int_counts
-            #     ):  # if the user wants to model with raw counts, don't log transform
-            #         batch_dict["ctrl_cell_counts"] = torch.expm1(ctrl_cell_counts)
-            #     else:
-            #         batch_dict["ctrl_cell_counts"] = ctrl_cell_counts
-            # else:
-            #     if int_counts:
-            #         batch_dict["ctrl_cell_counts"] = ctrl_cell_counts
-            #     else:
-            #         batch_dict["ctrl_cell_counts"] = torch.log1p(ctrl_cell_counts)
 
         if has_barcodes:
             batch_dict["pert_cell_barcode"] = pert_cell_barcode_list

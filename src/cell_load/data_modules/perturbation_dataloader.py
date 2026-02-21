@@ -178,7 +178,7 @@ class PerturbationDataModule(LightningDataModule):
         # Optional behaviors
         self.map_controls = kwargs.get("map_controls", True)
         self.perturbation_features_file = kwargs.get("perturbation_features_file")
-        self.int_counts = kwargs.get("int_counts", False)
+        self.exp_counts = kwargs.get("exp_counts", False)
         self.normalize_counts = kwargs.get("normalize_counts", False)
         self.store_raw_basal = kwargs.get("store_raw_basal", False)
         self.barcode = kwargs.get("barcode", False)
@@ -286,7 +286,7 @@ class PerturbationDataModule(LightningDataModule):
             # Include the optional behaviors
             "map_controls": self.map_controls,
             "perturbation_features_file": self.perturbation_features_file,
-            "int_counts": self.int_counts,
+            "exp_counts": self.exp_counts,
             "normalize_counts": self.normalize_counts,
             "store_raw_basal": self.store_raw_basal,
             "barcode": self.barcode,
@@ -332,7 +332,7 @@ class PerturbationDataModule(LightningDataModule):
             "perturbation_features_file": save_dict.pop(
                 "perturbation_features_file", None
             ),
-            "int_counts": save_dict.pop("int_counts", False),
+            "exp_counts": save_dict.pop("exp_counts", False),
             "normalize_counts": save_dict.pop("normalize_counts", False),
             "store_raw_basal": save_dict.pop("store_raw_basal", False),
             "barcode": save_dict.pop("barcode", True),
@@ -460,8 +460,8 @@ class PerturbationDataModule(LightningDataModule):
         batch_size: int | None = None,
     ):
         """Create a DataLoader with appropriate configuration."""
-        use_int_counts = "int_counts" in self.__dict__ and self.int_counts
-        collate_fn = partial(PerturbationDataset.collate_fn, int_counts=use_int_counts)
+        use_exp_counts = "exp_counts" in self.__dict__ and self.exp_counts
+        collate_fn = partial(PerturbationDataset.collate_fn, exp_counts=use_exp_counts)
 
         ds = MetadataConcatDataset(datasets)
         use_batch = self.basal_mapping_strategy == "batch"
