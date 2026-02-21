@@ -103,7 +103,7 @@ data.kwargs.use_consecutive_loading=true  # Faster IO, especially with output_sp
 ```
 
 These plug in as hydra configurable settings in the [STATE](https://github.com/ArcInstitute/state) repository.
-When `use_consecutive_loading=true`, data should be grouped by `(cell_type, perturbation/condition)` so each pair is contiguous. For example, avoid sequences like `(ct1, pert1), (ct1, pert2), (ct1, pert1)`.
+When `use_consecutive_loading=true`, data should be grouped by `(cell_type, perturbation/condition)` so each pair is contiguous within each H5/H5AD file. For example, avoid sequences like `(ct1, pert1), (ct1, pert2), (ct1, pert1)`; Cell Load will raise an error if this assumption is violated (checked per file).
 
 ### 3. Standalone Programmatic Usage
 
@@ -294,7 +294,7 @@ filtered_adata.write_h5ad("filtered_data.h5ad")
 - **`batch_size`**: Batch size for training (default: 128)
 - **`val_subsample_batches`**: STATE/Hydra parameter to subsample validation batches. In standalone `cell-load`, use `val_subsample_fraction`.
 - **`val_subsample_fraction`**: Fraction of validation subsets to keep (e.g., `0.01` keeps ~1% of `val_datasets`)
-- **`use_consecutive_loading`**: Groups batches by consecutive indices for faster H5 reads (especially for `output_space="all"`). Requires data grouped contiguously by `(cell_type, perturbation/condition)`.
+- **`use_consecutive_loading`**: Groups batches by consecutive indices for faster H5 reads (especially for `output_space="all"`). Requires data grouped contiguously by `(cell_type, perturbation/condition)` within each file, and raises an error if this assumption is violated.
 
 ### Usage
 

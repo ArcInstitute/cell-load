@@ -1,6 +1,7 @@
 import torch.multiprocessing as mp
 import os
 import traceback
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -295,3 +296,148 @@ class TestSingleProcessCompatibility:
 
         finally:
             toml_path.unlink()
+
+
+def _write_single_celltype_dataset(root: Path, perturbation_sequence: list[str]) -> None:
+    import anndata as ad
+    import pandas as pd
+
+    dataset_dir = root / "dataset1"
+    dataset_dir.mkdir()
+
+    n_cells = len(perturbation_sequence)
+    obs = pd.DataFrame(
+        {
+            "gene": perturbation_sequence,
+            "cell_type": ["CT0"] * n_cells,
+            "gem_group": ["B0"] * n_cells,
+        }
+    )
+    obs["gene"] = pd.Categorical(obs["gene"], categories=sorted(set(obs["gene"])))
+    obs["cell_type"] = pd.Categorical(obs["cell_type"], categories=["CT0"])
+    obs["gem_group"] = pd.Categorical(obs["gem_group"], categories=["B0"])
+
+    adata = ad.AnnData(obs=obs)
+    adata.obsm["X_hvg"] = np.random.rand(n_cells, 4).astype(np.float32)
+    adata.write(dataset_dir / "CT0.h5")
+
+
+def _write_multicelltype_dataset(
+    root: Path, rows: list[tuple[str, str]], fname: str = "multi.h5"
+) -> None:
+    import anndata as ad
+    import pandas as pd
+
+    dataset_dir = root / "dataset1"
+    dataset_dir.mkdir()
+
+    obs = pd.DataFrame(
+        {
+            "gene": [gene for _, gene in rows],
+            "cell_type": [ct for ct, _ in rows],
+            "gem_group": ["B0"] * len(rows),
+        }
+    )
+    obs["gene"] = pd.Categorical(obs["gene"], categories=sorted(set(obs["gene"])))
+    obs["cell_type"] = pd.Categorical(
+        obs["cell_type"], categories=sorted(set(obs["cell_type"]))
+    )
+    obs["gem_group"] = pd.Categorical(obs["gem_group"], categories=["B0"])
+
+    adata = ad.AnnData(obs=obs)
+    adata.obsm["X_hvg"] = np.random.rand(len(rows), 4).astype(np.float32)
+    adata.write(dataset_dir / fname)
+
+
+def test_consecutive_loading_raises_for_noncontiguous_groups(tmp_path):
+    _write_single_celltype_dataset(
+        tmp_path, ["P1", "P2", "P1", "P0", "P0"]
+    )  # (CT0,P1) appears twice with (CT0,P2) in between
+
+    config = {
+        "datasets": {"dataset1": "placeholder"},
+        "training": {"dataset1": "train"},
+    }
+    toml_path = create_toml_config(tmp_path, config)
+
+    try:
+        dm = make_datamodule(
+            toml_path,
+            embed_key="X_hvg",
+            batch_size=2,
+            cell_sentence_len=2,
+            num_workers=0,
+            control_pert="P0",
+            use_consecutive_loading=True,
+        )
+        dm.setup()
+
+        with pytest.raises(ValueError, match="non-consecutive group"):
+            dm.train_dataloader()
+    finally:
+        toml_path.unlink()
+
+
+def test_consecutive_loading_raises_for_cross_celltype_interleaving(tmp_path):
+    _write_multicelltype_dataset(
+        tmp_path,
+        [
+            ("CT0", "P1"),
+            ("CT1", "P9"),
+            ("CT0", "P1"),
+            ("CT1", "P9"),
+            ("CT0", "P0"),
+            ("CT1", "P0"),
+        ],
+    )
+
+    config = {
+        "datasets": {"dataset1": "placeholder"},
+        "training": {"dataset1": "train"},
+    }
+    toml_path = create_toml_config(tmp_path, config)
+
+    try:
+        dm = make_datamodule(
+            toml_path,
+            embed_key="X_hvg",
+            batch_size=2,
+            cell_sentence_len=2,
+            num_workers=0,
+            control_pert="P0",
+            use_consecutive_loading=True,
+        )
+        dm.setup()
+
+        with pytest.raises(ValueError, match="non-consecutive group"):
+            dm.train_dataloader()
+    finally:
+        toml_path.unlink()
+
+
+def test_consecutive_loading_allows_contiguous_groups(tmp_path):
+    _write_single_celltype_dataset(tmp_path, ["P1", "P1", "P2", "P2", "P0", "P0"])
+
+    config = {
+        "datasets": {"dataset1": "placeholder"},
+        "training": {"dataset1": "train"},
+    }
+    toml_path = create_toml_config(tmp_path, config)
+
+    try:
+        dm = make_datamodule(
+            toml_path,
+            embed_key="X_hvg",
+            batch_size=2,
+            cell_sentence_len=2,
+            num_workers=0,
+            control_pert="P0",
+            use_consecutive_loading=True,
+        )
+        dm.setup()
+
+        train_loader = dm.train_dataloader()
+        first_batch = next(iter(train_loader))
+        assert "pert_cell_emb" in first_batch
+    finally:
+        toml_path.unlink()

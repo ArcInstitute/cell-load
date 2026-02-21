@@ -82,6 +82,8 @@ class PerturbationBatchSampler(Sampler):
         for subset in self.dataset.datasets:
             base_dataset: PerturbationDataset = subset.dataset
             self.metadata_caches[base_dataset.h5_path] = base_dataset.metadata_cache
+        if self.use_consecutive_loading:
+            self._validate_file_level_consecutive_groups()
 
         # Create batches using the code-based grouping.
         self.sentences = self._create_sentences()
@@ -242,6 +244,139 @@ class PerturbationBatchSampler(Sampler):
         )
 
         return rank_sentences
+
+    def _format_group_key(
+        self, cache: H5MetadataCache, key: tuple[int, ...]
+    ) -> str:
+        if self.use_batch:
+            batch_code, cell_code, pert_code = key
+            batch_name = cache.batch_categories[batch_code]
+            cell_name = cache.cell_type_categories[cell_code]
+            pert_name = cache.pert_categories[pert_code]
+            return (
+                f"(batch='{batch_name}', cell_type='{cell_name}', "
+                f"perturbation/condition='{pert_name}')"
+            )
+
+        cell_code, pert_code = key
+        cell_name = cache.cell_type_categories[cell_code]
+        pert_name = cache.pert_categories[pert_code]
+        return f"(cell_type='{cell_name}', perturbation/condition='{pert_name}')"
+
+    def _validate_consecutive_groups(
+        self,
+        cache: H5MetadataCache,
+        indices: np.ndarray,
+        code_change: np.ndarray,
+        cell_codes: np.ndarray,
+        pert_codes: np.ndarray,
+        batch_codes: np.ndarray | None = None,
+        h5_path: str | None = None,
+    ) -> None:
+        """
+        Ensure each grouping key appears in exactly one contiguous run.
+
+        With use_batch=False, key is (cell_type, perturbation).
+        With use_batch=True, key is (batch, cell_type, perturbation).
+        """
+        run_starts = np.r_[0, np.where(code_change)[0] + 1]
+        seen: dict[tuple[int, ...], int] = {}
+
+        for run_idx, start in enumerate(run_starts):
+            if batch_codes is None:
+                key = (int(cell_codes[start]), int(pert_codes[start]))
+            else:
+                key = (
+                    int(batch_codes[start]),
+                    int(cell_codes[start]),
+                    int(pert_codes[start]),
+                )
+
+            prev_run_idx = seen.get(key)
+            if prev_run_idx is None:
+                seen[key] = run_idx
+                continue
+
+            curr_pos = int(start)
+            prev_pos = int(run_starts[prev_run_idx])
+            group_str = self._format_group_key(cache, key)
+
+            between_key = None
+            if run_idx - prev_run_idx > 1:
+                between_start = int(run_starts[prev_run_idx + 1])
+                if batch_codes is None:
+                    between_key = (
+                        int(cell_codes[between_start]),
+                        int(pert_codes[between_start]),
+                    )
+                else:
+                    between_key = (
+                        int(batch_codes[between_start]),
+                        int(cell_codes[between_start]),
+                        int(pert_codes[between_start]),
+                    )
+
+            grouping = (
+                "(batch, cell_type, perturbation/condition)"
+                if self.use_batch
+                else "(cell_type, perturbation/condition)"
+            )
+            detail = (
+                f"Observed pattern: {group_str} -> {self._format_group_key(cache, between_key)} -> {group_str}. "
+                if between_key is not None
+                else ""
+            )
+            raise ValueError(
+                "use_consecutive_loading=True requires each "
+                f"{grouping} group to appear in one contiguous run in file order. "
+                f"Found a non-consecutive group in '{h5_path or cache.h5_path}': {group_str}. "
+                f"It appears at positions {prev_pos} and {curr_pos} "
+                f"(file indices {int(indices[prev_pos])} and {int(indices[curr_pos])}). "
+                f"{detail}"
+                f"Please sort data so identical {grouping} groups are contiguous."
+            )
+
+    def _validate_file_level_consecutive_groups(self) -> None:
+        """
+        Validate consecutive-loading contiguity against full file order.
+
+        We validate the raw file-level code streams (not split subsets) so that
+        interleaving like (ct1, pert1), (ct2, pertX), (ct1, pert1) is rejected.
+        """
+        for h5_path, cache in self.metadata_caches.items():
+            indices = np.arange(cache.n_cells, dtype=np.int64)
+            cell_codes = cache.cell_type_codes
+            pert_codes = cache.pert_codes
+
+            if getattr(self, "use_batch", False):
+                batch_codes = cache.batch_codes
+                code_change = (
+                    (batch_codes[1:] != batch_codes[:-1])
+                    | (cell_codes[1:] != cell_codes[:-1])
+                    | (pert_codes[1:] != pert_codes[:-1])
+                )
+                self._validate_consecutive_groups(
+                    cache=cache,
+                    indices=indices,
+                    code_change=code_change,
+                    cell_codes=cell_codes,
+                    pert_codes=pert_codes,
+                    batch_codes=batch_codes,
+                    h5_path=str(h5_path),
+                )
+            else:
+                code_change = (cell_codes[1:] != cell_codes[:-1]) | (
+                    pert_codes[1:] != pert_codes[:-1]
+                )
+                self._validate_consecutive_groups(
+                    cache=cache,
+                    indices=indices,
+                    code_change=code_change,
+                    cell_codes=cell_codes,
+                    pert_codes=pert_codes,
+                    batch_codes=None,
+                    h5_path=str(h5_path),
+                )
 
     def _process_subset(self, global_offset: int, subset: Subset) -> list[list[int]]:
         """
