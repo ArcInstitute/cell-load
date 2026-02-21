@@ -31,11 +31,13 @@ class RandomMappingStrategy(BaseMappingStrategy):
         random_state=42,
         n_basal_samples=1,
         cache_perturbation_control_pairs=False,
+        use_consecutive_loading=False,
         **kwargs,
     ):
         super().__init__(name, random_state, n_basal_samples, **kwargs)
 
         self.cache_perturbation_control_pairs = cache_perturbation_control_pairs
+        self.use_consecutive_loading = use_consecutive_loading
 
         if self.cache_perturbation_control_pairs:
             logger.info(
@@ -44,6 +46,17 @@ class RandomMappingStrategy(BaseMappingStrategy):
             logger.info(
                 f"Warning: If using n_basal_samples > 1, use the original behavior by setting cache_perturbation_control_pairs=False"
             )
+        if self.use_consecutive_loading:
+            if self.cache_perturbation_control_pairs:
+                logger.info(
+                    "RandomMappingStrategy initialized with use_consecutive_loading=True; "
+                    "control mappings will be assigned in file order."
+                )
+            else:
+                logger.info(
+                    "RandomMappingStrategy initialized with use_consecutive_loading=True; "
+                    "control cells will be sampled as consecutive blocks with random offsets."
+                )
 
         # Map cell type -> list of control indices.
         self.split_control_pool = {
@@ -85,33 +98,34 @@ class RandomMappingStrategy(BaseMappingStrategy):
         """
 
         all_indices = np.concatenate([perturbed_indices, control_indices])
-        # Get cell types for all control indices
-        cell_types = dataset.get_all_cell_types(control_indices)
+        # Get cell type codes for all control indices
+        cell_types = dataset.get_all_cell_type_codes(control_indices)
 
         # Group by cell type and store the control indices
-        for ct in np.unique(cell_types):
-            ct_mask = cell_types == ct
+        for ct_code in np.unique(cell_types):
+            ct_mask = cell_types == ct_code
             ct_indices = control_indices[ct_mask]
 
-            if ct not in self.split_control_pool[split]:
-                self.split_control_pool[split][ct] = list(ct_indices)
+            if ct_code not in self.split_control_pool[split]:
+                self.split_control_pool[split][ct_code] = list(ct_indices)
             else:
-                self.split_control_pool[split][ct].extend(ct_indices)
+                self.split_control_pool[split][ct_code].extend(ct_indices)
 
-        if self.cache_perturbation_control_pairs:
+        build_mapping = self.cache_perturbation_control_pairs
+        if build_mapping:
             logger.info(
                 f"Creating cached perturbation-control mapping for split '{split}' with {len(perturbed_indices)} perturbed cells and {len(control_indices)} control cells"
             )
 
         # Create a fixed mapping from perturbed_idx -> list of control indices
         # Only if caching is enabled
-        if self.cache_perturbation_control_pairs:
+        if build_mapping:
             pert_groups = {}
 
             # Group perturbed indices by cell type and perturbation name
             for pert_idx in all_indices:
-                pert_cell_type = dataset.get_cell_type(pert_idx)
-                pert_name = dataset.get_perturbation_name(pert_idx)
+                pert_cell_type = dataset.get_cell_type_code(pert_idx)
+                pert_name = dataset.get_perturbation_code(pert_idx)
                 key = (pert_cell_type, pert_name)
 
                 if key not in pert_groups:
@@ -129,20 +143,29 @@ class RandomMappingStrategy(BaseMappingStrategy):
                         self.split_control_mapping[split][pert_idx] = []
                     continue
 
-                # Shuffle control pool for random assignment
-                shuffled_pool = pool.copy()
-                self.rng.shuffle(shuffled_pool)
-
                 # Calculate total assignments needed for this cell type / perturbation
                 total_assignments_needed = len(pert_idxs_list) * self.n_basal_samples
+                if self.use_consecutive_loading:
+                    pool_arr = np.asarray(pool, dtype=np.int64)
+                    if pool_arr.size == 0:
+                        control_assignments = []
+                    else:
+                        repeats = int(np.ceil(total_assignments_needed / pool_arr.size))
+                        control_assignments = np.tile(pool_arr, repeats)[
+                            :total_assignments_needed
+                        ].tolist()
+                else:
+                    # Shuffle control pool for random assignment
+                    shuffled_pool = pool.copy()
+                    self.rng.shuffle(shuffled_pool)
 
-                # Ensure we have enough controls for all assignments
-                assert len(shuffled_pool) >= total_assignments_needed, (
-                    f"Need {total_assignments_needed} controls for {cell_type} / {pert_name} but only have {len(shuffled_pool)}"
-                )
+                    # Ensure we have enough controls for all assignments
+                    assert len(shuffled_pool) >= total_assignments_needed, (
+                        f"Need {total_assignments_needed} controls for {cell_type} / {pert_name} but only have {len(shuffled_pool)}"
+                    )
 
-                # Assign control cells without replacement to this cell type / perturbation
-                control_assignments = shuffled_pool[:total_assignments_needed]
+                    # Assign control cells without replacement to this cell type / perturbation
+                    control_assignments = shuffled_pool[:total_assignments_needed]
 
                 # Assign control cells to each perturbed cell
                 for i, pert_idx in enumerate(pert_idxs_list):
@@ -163,7 +186,8 @@ class RandomMappingStrategy(BaseMappingStrategy):
         Returns n_basal_samples control indices that are from the same cell type as the perturbed cell.
 
         If cache_perturbation_control_pairs is True, uses the pre-computed mapping.
-        If False, samples new control cells each time (original behavior).
+        If use_consecutive_loading is True, samples a consecutive block with a random offset.
+        Otherwise, samples new control cells each time (original behavior).
         """
 
         if self.cache_perturbation_control_pairs:
@@ -174,13 +198,21 @@ class RandomMappingStrategy(BaseMappingStrategy):
                     f"No control cells found in RandomMappingStrategy for cell type '{dataset.get_cell_type(perturbed_idx)}'"
                 )
             return np.array(control_idxs)
-        else:
-            # Sample new control cells each time (original behavior)
-            pert_cell_type = dataset.get_cell_type(perturbed_idx)
+        if self.use_consecutive_loading:
+            pert_cell_type = dataset.get_cell_type_code(perturbed_idx)
             pool = self.split_control_pool[split].get(pert_cell_type, None)
             if not pool:
                 raise ValueError(
-                    f"No control cells found in RandomMappingStrategy for cell type '{pert_cell_type}'"
+                    f"No control cells found in RandomMappingStrategy for cell type '{dataset.get_cell_type(perturbed_idx)}'"
+                )
+            return self._sample_consecutive_controls(pool, self.n_basal_samples)
+        else:
+            # Sample new control cells each time (original behavior)
+            pert_cell_type = dataset.get_cell_type_code(perturbed_idx)
+            pool = self.split_control_pool[split].get(pert_cell_type, None)
+            if not pool:
+                raise ValueError(
+                    f"No control cells found in RandomMappingStrategy for cell type '{dataset.get_cell_type(perturbed_idx)}'"
                 )
             control_idxs = self.rng.choices(pool, k=self.n_basal_samples)
             return np.array(control_idxs)
@@ -192,7 +224,8 @@ class RandomMappingStrategy(BaseMappingStrategy):
         Returns a single control index from the same cell type as the perturbed cell.
 
         If cache_perturbation_control_pairs is True, uses the pre-computed mapping.
-        If False, samples a new control cell each time (original behavior).
+        If use_consecutive_loading is True, samples a consecutive control with a random offset.
+        Otherwise, samples a new control cell each time (original behavior).
         """
 
         if self.cache_perturbation_control_pairs:
@@ -201,10 +234,37 @@ class RandomMappingStrategy(BaseMappingStrategy):
             if len(control_idxs) == 0:
                 return None
             return control_idxs[0]
+        if self.use_consecutive_loading:
+            pert_cell_type = dataset.get_cell_type_code(perturbed_idx)
+            pool = self.split_control_pool[split].get(pert_cell_type, None)
+            if not pool:
+                return None
+            return self._sample_consecutive_controls(pool, 1)[0]
         else:
             # Sample new control cell each time (original behavior)
-            pert_cell_type = dataset.get_cell_type(perturbed_idx)
+            pert_cell_type = dataset.get_cell_type_code(perturbed_idx)
             pool = self.split_control_pool[split].get(pert_cell_type, None)
             if not pool:
                 return None
             return self.rng.choice(pool)
+
+    def _sample_consecutive_controls(
+        self, pool: list[int], n_samples: int
+    ) -> np.ndarray:
+        """Return n_samples consecutive control indices with a random start offset."""
+        pool_size = len(pool)
+        if pool_size == 0 or n_samples <= 0:
+            return np.array([], dtype=np.int64)
+        if pool_size == 1:
+            return np.array([pool[0]] * n_samples, dtype=np.int64)
+
+        start = self.rng.randrange(pool_size)
+        if n_samples == 1:
+            return np.array([pool[start]], dtype=np.int64)
+
+        if start + n_samples <= pool_size:
+            return np.array(pool[start : start + n_samples], dtype=np.int64)
+
+        tail = pool[start:]
+        head = pool[: n_samples - len(tail)]
+        return np.array(tail + head, dtype=np.int64)

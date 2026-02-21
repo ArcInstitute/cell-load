@@ -136,6 +136,11 @@ def generate_onehot_map(keys) -> dict:
     """
     Build a map from each unique key to a fixed-length one-hot torch vector.
 
+    Note:
+        We clone each row from the identity matrix so every tensor owns compact
+        storage. This avoids pathological file sizes when maps are serialized
+        with pickle (shared-storage tensor views can serialize very poorly).
+
     Args:
         keys: iterable of hashable items
     Returns:
@@ -145,7 +150,7 @@ def generate_onehot_map(keys) -> dict:
     num_classes = len(unique_keys)
     # identity matrix rows are one-hot vectors
     onehots = torch.eye(num_classes)
-    return {k: onehots[i] for i, k in enumerate(unique_keys)}
+    return {k: onehots[i].clone() for i, k in enumerate(unique_keys)}
 
 
 def data_to_torch_X(X):

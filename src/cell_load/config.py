@@ -70,7 +70,6 @@ class ExperimentConfig:
             if key.startswith(f"{dataset}."):
                 celltype = key.split(".", 1)[1]
                 result[celltype] = pert_config
-                print(dataset, celltype, {k: len(v) for k, v in pert_config.items()})
         return result
 
     def validate(self) -> None:
@@ -84,7 +83,6 @@ class ExperimentConfig:
 
         # Check that dataset paths exist
         for dataset, path in self.datasets.items():
-            print(path)
             if not Path(path).exists():
                 logger.warning(f"Dataset path does not exist: {path}")
 

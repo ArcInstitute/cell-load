@@ -52,6 +52,8 @@ class BaseMappingStrategy(ABC):
             logger.info(
                 f"Adding missing 'map_controls' attribute to {self.name} mapping strategy."
             )
+        if not hasattr(self, "use_consecutive_loading"):
+            self.use_consecutive_loading = False
 
     @abstractmethod
     def register_split_indices(

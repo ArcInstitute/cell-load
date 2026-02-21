@@ -33,6 +33,8 @@ class PerturbationBatchSampler(Sampler):
         cell_sentence_len: int = 512,
         test: bool = False,
         use_batch: bool = False,
+        use_consecutive_loading: bool = False,
+        downsample_cells: int | None = None,
         seed: int = 0,
         epoch: int = 0,
     ):
@@ -48,6 +50,7 @@ class PerturbationBatchSampler(Sampler):
         self.batch_size = batch_size
         self.test = test
         self.use_batch = use_batch
+        self.use_consecutive_loading = use_consecutive_loading
         self.seed = seed
         self.epoch = epoch
 
@@ -59,6 +62,7 @@ class PerturbationBatchSampler(Sampler):
 
         self.cell_sentence_len = cell_sentence_len
         self.drop_last = drop_last
+        self.downsample_cells = self._validate_downsample_cells(downsample_cells)
 
         # Setup distributed settings if distributed mode is enabled.
         self.distributed = False
@@ -124,9 +128,15 @@ class PerturbationBatchSampler(Sampler):
             # If batch is smaller than cell_sentence_len, sample with replacement
             if len(sentence) < self.cell_sentence_len and not self.test:
                 # during inference, don't sample by replacement
-                new_sentence = np.random.choice(
-                    sentence, size=self.cell_sentence_len, replace=True
-                ).tolist()
+                if self.use_consecutive_loading:
+                    repeats = int(
+                        np.ceil(self.cell_sentence_len / max(len(sentence), 1))
+                    )
+                    new_sentence = (sentence * repeats)[: self.cell_sentence_len]
+                else:
+                    new_sentence = np.random.choice(
+                        sentence, size=self.cell_sentence_len, replace=True
+                    ).tolist()
                 num_partial += 1
             else:
                 new_sentence = copy.deepcopy(sentence)
@@ -156,6 +166,48 @@ class PerturbationBatchSampler(Sampler):
             all_batches.append(current_batch)
 
         return all_batches
+
+    def _validate_downsample_cells(self, downsample_cells: int | None) -> int | None:
+        if downsample_cells is None:
+            return None
+        if isinstance(downsample_cells, bool):
+            raise ValueError("downsample_cells must be a positive integer or None.")
+        if isinstance(downsample_cells, float):
+            if not downsample_cells.is_integer():
+                raise ValueError("downsample_cells must be a positive integer or None.")
+            downsample_cells = int(downsample_cells)
+        elif not isinstance(downsample_cells, (int, np.integer)):
+            raise ValueError("downsample_cells must be a positive integer or None.")
+        downsample_cells = int(downsample_cells)
+        if downsample_cells <= 0:
+            raise ValueError("downsample_cells must be a positive integer or None.")
+        return downsample_cells
+
+    def _apply_downsample_cells(self, sentences: list[list[int]]) -> list[list[int]]:
+        if self.downsample_cells is None or not sentences:
+            return sentences
+
+        total = sum(len(sentence) for sentence in sentences)
+        if total <= self.downsample_cells:
+            return sentences
+
+        order = np.random.permutation(len(sentences))
+        selected: list[list[int]] = []
+        remaining = self.downsample_cells
+        for idx in order:
+            if remaining <= 0:
+                break
+            sentence = sentences[idx]
+            if len(sentence) <= remaining:
+                selected.append(sentence)
+                remaining -= len(sentence)
+            else:
+                if not self.drop_last and remaining > 0:
+                    selected.append(sentence[:remaining])
+                remaining = 0
+                break
+
+        return selected
 
     def _get_rank_sentences(self) -> list[list[int]]:
         """
@@ -239,11 +291,67 @@ class PerturbationBatchSampler(Sampler):
             group_indices = sorted_indices[start:end]
             np.random.shuffle(group_indices)
 
+            group_sentences = []
             for i in range(0, len(group_indices), self.cell_sentence_len):
                 sentence = group_indices[i : i + self.cell_sentence_len]
                 if len(sentence) < self.cell_sentence_len and self.drop_last:
                     continue
-                subset_batches.append(sentence.tolist())
+                group_sentences.append(sentence.tolist())
+
+            group_sentences = self._apply_downsample_cells(group_sentences)
+            subset_batches.extend(group_sentences)
+
+        return subset_batches
+
+    def _process_subset_consecutive(
+        self, global_offset: int, subset: Subset
+    ) -> list[list[int]]:
+        """
+        Process a single subset to create consecutive sentences based on H5 codes.
+
+        This assumes the input indices are already in file order and splits
+        sentences at code-change boundaries without shuffling.
+        """
+        base_dataset = subset.dataset
+        indices = np.array(subset.indices)
+        if indices.size == 0:
+            return []
+
+        cache: H5MetadataCache = self.metadata_caches[base_dataset.h5_path]
+
+        # Codes in file order
+        cell_codes = cache.cell_type_codes[indices]
+        pert_codes = cache.pert_codes[indices]
+        if getattr(self, "use_batch", False):
+            batch_codes = cache.batch_codes[indices]
+            code_change = (
+                (batch_codes[1:] != batch_codes[:-1])
+                | (cell_codes[1:] != cell_codes[:-1])
+                | (pert_codes[1:] != pert_codes[:-1])
+            )
+        else:
+            code_change = (cell_codes[1:] != cell_codes[:-1]) | (
+                pert_codes[1:] != pert_codes[:-1]
+            )
+
+        # Global indices in dataset order
+        global_indices = np.arange(global_offset, global_offset + len(indices))
+
+        # Split into contiguous segments when codes change
+        boundaries = np.where(code_change)[0] + 1
+        segments = np.split(global_indices, boundaries)
+
+        subset_batches = []
+        for segment in segments:
+            group_sentences = []
+            for i in range(0, len(segment), self.cell_sentence_len):
+                sentence = segment[i : i + self.cell_sentence_len]
+                if len(sentence) < self.cell_sentence_len and self.drop_last:
+                    continue
+                group_sentences.append(sentence.tolist())
+
+            group_sentences = self._apply_downsample_cells(group_sentences)
+            subset_batches.extend(group_sentences)
 
         return subset_batches
 
@@ -254,7 +362,10 @@ class PerturbationBatchSampler(Sampler):
         global_offset = 0
         all_batches = []
         for subset in self.dataset.datasets:
-            subset_batches = self._process_subset(global_offset, subset)
+            if self.use_consecutive_loading:
+                subset_batches = self._process_subset_consecutive(global_offset, subset)
+            else:
+                subset_batches = self._process_subset(global_offset, subset)
             all_batches.extend(subset_batches)
             global_offset += len(subset)
         np.random.shuffle(all_batches)
