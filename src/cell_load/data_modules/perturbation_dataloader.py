@@ -70,7 +70,7 @@ class PerturbationDataModule(LightningDataModule):
         output_space: Literal["gene", "all", "embedding"] = "gene",
         downsample: float | None = None,
         downsample_cells: int | None = None,
-        is_log1p: bool = False,
+        is_log1p: bool = True,
         basal_mapping_strategy: Literal["batch", "random"] = "random",
         n_basal_samples: int = 1,
         should_yield_control_cells: bool = True,
@@ -100,7 +100,7 @@ class PerturbationDataModule(LightningDataModule):
                 read depth per cell (only for output_space="all")
             downsample_cells: Max cells per (cell_type, perturbation[, batch]) group; if a group has
                 fewer cells it is unchanged
-            is_log1p: Whether raw counts in X are log1p-transformed (auto-set if uns/log1p is present)
+            is_log1p: Whether raw counts in X are log1p-transformed (default True; auto-set if uns/log1p is present)
             basal_mapping_strategy: One of {"batch","random","nearest","ot"}
             n_basal_samples: Number of control cells to sample per perturbed cell
             cache_perturbation_control_pairs: If True cache perturbation-control pairs at the start of training and reuse them.
@@ -167,7 +167,7 @@ class PerturbationDataModule(LightningDataModule):
             if downsample_cells <= 0:
                 raise ValueError("downsample_cells must be a positive integer or None.")
             self.downsample_cells = downsample_cells
-        self.is_log1p = is_log1p
+        self.is_log1p = bool(is_log1p)
 
         # Sampling and mapping
         self.n_basal_samples = n_basal_samples
@@ -548,6 +548,19 @@ class PerturbationDataModule(LightningDataModule):
             logger.warning(
                 "Detected uns/log1p in at least one dataset; setting is_log1p=True."
             )
+
+        if self.is_log1p:
+            if seen_log1p:
+                logger.warning(
+                    "is_log1p mode is ENABLED. Detected uns/log1p metadata (example: %s).",
+                    log1p_example,
+                )
+            else:
+                logger.warning(
+                    "is_log1p mode is ENABLED by configuration/default, but no uns/log1p metadata was detected."
+                )
+        else:
+            logger.warning("is_log1p mode is DISABLED.")
 
         # Create one-hot maps
         if self.perturbation_features_file:

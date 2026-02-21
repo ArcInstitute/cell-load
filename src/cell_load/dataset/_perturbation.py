@@ -46,7 +46,7 @@ class PerturbationDataset(Dataset):
         barcode: bool = False,
         additional_obs: list[str] | None = None,
         downsample: float | None = None,
-        is_log1p: bool = False,
+        is_log1p: bool = True,
         cell_sentence_len: int | None = None,
         h5_open_kwargs: dict | None = None,
         **kwargs,
@@ -73,7 +73,7 @@ class PerturbationDataset(Dataset):
             additional_obs: Optional list of obs column names to include in each sample
             downsample: If <=1, fraction of counts to retain via binomial downsampling; if >1, target
                 read depth per cell (only for output_space="all")
-            is_log1p: Whether raw counts in X are log1p-transformed (affects downsampling)
+            is_log1p: Whether raw counts in X are log1p-transformed (default True; affects downsampling)
             cell_sentence_len: Optional sentence length for consecutive loading batches
             h5_open_kwargs: Optional kwargs to pass to h5py.File (e.g., rdcc_nbytes)
             **kwargs: Additional options (e.g. output_space)
