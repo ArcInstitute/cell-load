@@ -2,11 +2,14 @@
 """CLI for filter_on_target_knockdown function."""
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
 import anndata
 import scanpy as sc
+
+logger = logging.getLogger(__name__)
 
 
 def preprocess_state_paper(adata_pp: anndata.AnnData) -> anndata.AnnData:
@@ -21,14 +24,14 @@ def preprocess_state_paper(adata_pp: anndata.AnnData) -> anndata.AnnData:
     Returns:
         Preprocessed AnnData object
     """
-    print("Applying state paper preprocessing...")
+    logger.info("Applying state paper preprocessing.")
 
     # 1. Normalize to 10k read depth
-    print("  - Normalizing to 10k read depth...")
+    logger.info("Normalizing to 10k read depth.")
     sc.pp.normalize_total(adata_pp, target_sum=1e4)
 
     # 2. Log transform
-    print("  - Log transforming...")
+    logger.info("Applying log1p transform.")
     sc.pp.log1p(adata_pp)
 
     return adata_pp
@@ -105,29 +108,44 @@ def main():
         help="Apply preprocessing as in state paper: normalize to 10k read depth "
         "and log transform before writing output",
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="WARNING",
+        choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"],
+        help="Python logging level (default: WARNING)",
+    )
 
     args = parser.parse_args()
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper()),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
     # Validate input file exists
     input_path = Path(args.input)
     if not input_path.exists():
-        print(f"Error: Input file {args.input} does not exist", file=sys.stderr)
+        logger.error("Input file %s does not exist.", args.input)
         sys.exit(1)
 
     # Load data
     try:
-        print(f"Loading data from {args.input}...")
+        logger.info("Loading data from %s.", args.input)
         adata = anndata.read_h5ad(args.input)
-        print(f"Loaded AnnData with {adata.n_obs} cells and {adata.n_vars} genes")
+        logger.info(
+            "Loaded AnnData with %d cells and %d genes.",
+            adata.n_obs,
+            adata.n_vars,
+        )
     except Exception as e:
-        print(f"Error loading data: {e}", file=sys.stderr)
+        logger.exception("Error loading data: %s", e)
         sys.exit(1)
 
     # Import and apply filter
     try:
         from ..utils.data_utils import filter_on_target_knockdown
 
-        print("Applying on-target knockdown filter...")
+        logger.info("Applying on-target knockdown filter.")
         filtered_adata = filter_on_target_knockdown(
             adata,
             perturbation_column=args.perturbation_column,
@@ -139,12 +157,14 @@ def main():
             var_gene_name=args.var_gene_name,
         )
 
-        print(
-            f"Filtered to {filtered_adata.n_obs} cells and {filtered_adata.n_vars} genes"
+        logger.info(
+            "Filtered to %d cells and %d genes.",
+            filtered_adata.n_obs,
+            filtered_adata.n_vars,
         )
 
     except Exception as e:
-        print(f"Error applying filter: {e}", file=sys.stderr)
+        logger.exception("Error applying filter: %s", e)
         sys.exit(1)
 
     # Apply preprocessing if requested
@@ -152,7 +172,7 @@ def main():
         try:
             filtered_adata = preprocess_state_paper(filtered_adata)
         except Exception as e:
-            print(f"Error during preprocessing: {e}", file=sys.stderr)
+            logger.exception("Error during preprocessing: %s", e)
             sys.exit(1)
 
     # Save output
@@ -167,19 +187,19 @@ def main():
             column_values = filtered_adata.var[filtered_adata.var.index.name].values
             if not all(index_values == column_values):
                 # Rename the index to avoid conflict
-                print(
-                    "  - Fixing var index name conflict: "
-                    f"{filtered_adata.var.index.name} -> "
-                    f"{filtered_adata.var.index.name}_index"
+                logger.info(
+                    "Fixing var index name conflict: %s -> %s",
+                    filtered_adata.var.index.name,
+                    f"{filtered_adata.var.index.name}_index",
                 )
                 filtered_adata.var.index.name = f"{filtered_adata.var.index.name}_index"
 
-        print(f"Saving filtered data to {args.output}...")
+        logger.info("Saving filtered data to %s.", args.output)
         filtered_adata.write_h5ad(args.output)
-        print("Done!")
+        logger.info("Done.")
 
     except Exception as e:
-        print(f"Error saving output: {e}", file=sys.stderr)
+        logger.exception("Error saving output: %s", e)
         sys.exit(1)
 
 

@@ -2,6 +2,7 @@ import logging
 import os
 import glob
 import re
+import sys
 
 from functools import partial
 from pathlib import Path
@@ -81,6 +82,7 @@ class PerturbationDataModule(LightningDataModule):
         additional_obs: list[str] | None = None,
         use_consecutive_loading: bool = False,
         h5_open_kwargs: dict | None = None,
+        show_progress: bool = True,
         **kwargs,  # missing perturbation_features_file  and store_raw_basal for backwards compatibility
     ):
         """
@@ -109,6 +111,7 @@ class PerturbationDataModule(LightningDataModule):
             val_subsample_fraction: Fraction of validation subsets to keep (subsamples self.val_datasets)
             use_consecutive_loading: Whether to form cell sets from consecutive indices for faster IO
             h5_open_kwargs: Optional kwargs to pass to h5py.File (e.g., rdcc_nbytes)
+            show_progress: Whether to display tqdm progress during dataset setup
         """
         super().__init__()
 
@@ -185,6 +188,7 @@ class PerturbationDataModule(LightningDataModule):
         self.barcode = kwargs.get("barcode", False)
         self.additional_obs = additional_obs
         self.h5_open_kwargs = h5_open_kwargs
+        self.show_progress = bool(show_progress)
         if self.use_consecutive_loading:
             self._set_h5_cache_env_defaults()
 
@@ -647,8 +651,13 @@ class PerturbationDataModule(LightningDataModule):
             total_files += len(files)
 
         pbar = (
-            tqdm(total=total_files, desc="Processing datasets", leave=False)
-            if total_files > 0
+            tqdm(
+                total=total_files,
+                desc="Processing datasets",
+                leave=False,
+                file=sys.stderr,
+            )
+            if (self.show_progress and total_files > 0)
             else None
         )
 

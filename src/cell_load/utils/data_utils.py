@@ -289,8 +289,8 @@ def is_on_target_knockdown(
         return False
 
     if target_gene not in adata.var_names:
-        print(f"Gene {target_gene!r} not found in `adata.var_names`.")
-        return 1
+        log.warning("Gene %r not found in `adata.var_names`.", target_gene)
+        return False
 
     gene_idx = adata.var_names.get_loc(target_gene)
     X = adata.layers[layer] if layer is not None else adata.X
@@ -386,10 +386,15 @@ def filter_on_target_knockdown(
         if pert not in control_mean_cache:
             try:
                 ctrl_mean = _mean(X[control_cells, gene_idx])
-            except Exception:
-                print(control_cells.shape, control_cells)
-                print(gene_idx)
-                print(X[control_cells, gene_idx].shape)
+            except Exception as exc:
+                log.exception(
+                    "Failed to compute control mean for perturbation %r at gene index %s.",
+                    pert,
+                    gene_idx,
+                )
+                raise RuntimeError(
+                    f"Unable to compute control mean for perturbation {pert!r}."
+                ) from exc
             control_mean_cache[pert] = ctrl_mean
         else:
             ctrl_mean = control_mean_cache[pert]
