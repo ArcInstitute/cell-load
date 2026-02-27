@@ -18,6 +18,8 @@ from tqdm import tqdm
 from ..config import ExperimentConfig
 from ..dataset import MetadataConcatDataset, PerturbationDataset
 from ..mapping_strategies import BatchMappingStrategy, RandomMappingStrategy
+
+_OUTPUT_SPACE_ALIASES: dict[str, str] = {"hvg": "gene", "transcriptome": "all"}
 from ..utils.data_utils import (
     GlobalH5MetadataCache,
     generate_onehot_map,
@@ -69,7 +71,7 @@ class PerturbationDataModule(LightningDataModule):
         cell_type_key: str = "cell_type",
         control_pert: str = "non-targeting",
         embed_key: Literal["X_hvg", "X_state"] | None = None,
-        output_space: Literal["gene", "all", "embedding"] = "gene",
+        output_space: Literal["gene", "all", "embedding", "hvg", "transcriptome"] = "gene",
         downsample: float | None = None,
         downsample_cells: int | None = None,
         is_log1p: bool = True,
@@ -150,7 +152,7 @@ class PerturbationDataModule(LightningDataModule):
         self.cell_type_key = cell_type_key
         self.control_pert = control_pert
         self.embed_key = embed_key
-        self.output_space = output_space
+        self.output_space = _OUTPUT_SPACE_ALIASES.get(output_space, output_space)
         if self.output_space not in {"gene", "all", "embedding"}:
             raise ValueError(
                 f"output_space must be one of 'gene', 'all', or 'embedding'; got {self.output_space!r}"

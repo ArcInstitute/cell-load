@@ -19,6 +19,8 @@ from ..utils.data_utils import (
 
 logger = logging.getLogger(__name__)
 
+_OUTPUT_SPACE_ALIASES: dict[str, str] = {"hvg": "gene", "transcriptome": "all"}
+
 
 class PerturbationDataset(Dataset):
     """
@@ -95,7 +97,9 @@ class PerturbationDataset(Dataset):
         self.should_yield_control_cells = should_yield_control_cells
         self.store_raw_basal = store_raw_basal
         self.barcode = barcode
-        self.output_space = kwargs.get("output_space", "gene")
+        self.output_space = _OUTPUT_SPACE_ALIASES.get(
+            kwargs.get("output_space", "gene"), kwargs.get("output_space", "gene")
+        )
         if self.output_space not in {"gene", "all", "embedding"}:
             raise ValueError(
                 f"output_space must be one of 'gene', 'all', or 'embedding'; got {self.output_space!r}"
