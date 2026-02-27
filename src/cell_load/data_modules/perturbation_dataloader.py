@@ -62,6 +62,7 @@ class PerturbationDataModule(LightningDataModule):
         toml_config_path: str,
         batch_size: int = 128,
         num_workers: int = 8,
+        pin_memory: bool = False,
         random_seed: int = 42,  # this should be removed by seed everything
         pert_col: str = "gene",
         batch_col: str = "gem_group",
@@ -123,6 +124,7 @@ class PerturbationDataModule(LightningDataModule):
         # Experiment level params
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.pin_memory = bool(pin_memory)
         self.random_seed = random_seed
         self.rng = np.random.default_rng(random_seed)
         self.drop_last = drop_last
@@ -489,7 +491,7 @@ class PerturbationDataModule(LightningDataModule):
             batch_sampler=sampler,
             num_workers=self.num_workers,
             collate_fn=collate_fn,
-            pin_memory=True,
+            pin_memory=getattr(self, "pin_memory", False),
             prefetch_factor=4 if not test and self.num_workers > 0 else None,
             persistent_workers=bool(self.num_workers > 0 and not test),
             worker_init_fn=_worker_init_fn if self.num_workers > 0 else None,
