@@ -71,7 +71,9 @@ class PerturbationDataModule(LightningDataModule):
         cell_type_key: str = "cell_type",
         control_pert: str = "non-targeting",
         embed_key: Literal["X_hvg", "X_state"] | None = None,
-        output_space: Literal["gene", "all", "embedding", "hvg", "transcriptome"] = "gene",
+        output_space: Literal[
+            "gene", "all", "embedding", "hvg", "transcriptome"
+        ] = "gene",
         downsample: float | None = None,
         downsample_cells: int | None = None,
         is_log1p: bool = True,
