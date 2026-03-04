@@ -1,5 +1,7 @@
 import logging
 import os
+import time
+import threading
 from pathlib import Path
 
 from functools import lru_cache
@@ -18,6 +20,56 @@ from ..utils.data_utils import (
 
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Lightweight per-worker profiling (activated by CELL_LOAD_PROFILE=1)
+# ---------------------------------------------------------------------------
+_PROFILE_ENABLED = os.environ.get("CELL_LOAD_PROFILE", "0") == "1"
+_PROFILE_LOG_INTERVAL = int(os.environ.get("CELL_LOAD_PROFILE_INTERVAL", "200"))
+
+
+class _WorkerProfiler:
+    """Accumulates timing stats inside a single DataLoader worker."""
+
+    __slots__ = (
+        "h5_read_time", "csr_dense_time", "obsm_read_time", "collate_time",
+        "getitems_time", "getitem_time", "call_count", "_lock",
+    )
+
+    def __init__(self):
+        self.h5_read_time = 0.0
+        self.csr_dense_time = 0.0
+        self.obsm_read_time = 0.0
+        self.collate_time = 0.0
+        self.getitems_time = 0.0
+        self.getitem_time = 0.0
+        self.call_count = 0
+        self._lock = threading.Lock()
+
+    def log_and_reset(self, worker_id: int | None = None):
+        with self._lock:
+            n = self.call_count
+            if n == 0:
+                return
+            tag = f"[worker-{worker_id}]" if worker_id is not None else "[main]"
+            logger.info(
+                "PERF %s calls=%d | h5_read=%.3fs csr_dense=%.3fs obsm_read=%.3fs "
+                "getitem=%.3fs getitems=%.3fs",
+                tag, n,
+                self.h5_read_time, self.csr_dense_time, self.obsm_read_time,
+                self.getitem_time, self.getitems_time,
+            )
+            self.h5_read_time = 0.0
+            self.csr_dense_time = 0.0
+            self.obsm_read_time = 0.0
+            self.collate_time = 0.0
+            self.getitems_time = 0.0
+            self.getitem_time = 0.0
+            self.call_count = 0
+
+
+# Per-process singleton (each DataLoader worker gets its own via fork/spawn)
+_worker_profiler = _WorkerProfiler() if _PROFILE_ENABLED else None
 
 _OUTPUT_SPACE_ALIASES: dict[str, str] = {"hvg": "gene", "transcriptome": "all"}
 
@@ -270,19 +322,9 @@ class PerturbationDataset(Dataset):
     def __getitem__(self, idx: int):
         """
         Fetch a sample (perturbed + mapped control) by filtered index.
-
-        This returns a dictionary with:
-        - pert_cell_emb: the embedding of the perturbed cell (either in gene space or embedding space)
-        - ctrl_cell_emb: the control cell's embedding. control cells are chosen by the mapping strategy
-        - pert_emb: the one-hot encoding (or other featurization) for the perturbation
-        - pert_name: the perturbation name
-        - cell_type: the cell type
-        - batch: the batch (as an int or string)
-        - batch_name: the batch name (as a string)
-        - dataset_name: the dataset name (from the TOML)
-        - pert_cell_counts: the raw gene expression of the perturbed cell (if store_raw_expression is True)
-        - ctrl_cell_counts: the raw gene expression of the control cell (if store_raw_basal is True)
         """
+        if _PROFILE_ENABLED:
+            _t_gi_start = time.perf_counter()
         self._ensure_h5_open()
 
         # Get the perturbed cell expression, control cell expression, and index of mapped control cell
@@ -355,6 +397,14 @@ class PerturbationDataset(Dataset):
             for obs_key in self.additional_obs:
                 sample[obs_key] = self._fetch_obs_value(file_idx, obs_key)
 
+        if _PROFILE_ENABLED:
+            _worker_profiler.getitem_time += time.perf_counter() - _t_gi_start
+            _worker_profiler.call_count += 1
+            if _worker_profiler.call_count % _PROFILE_LOG_INTERVAL == 0:
+                from torch.utils.data import get_worker_info
+                wi = get_worker_info()
+                _worker_profiler.log_and_reset(wi.id if wi else None)
+
         return sample
 
     def __getitems__(self, indices):
@@ -362,9 +412,20 @@ class PerturbationDataset(Dataset):
         Batch-aware fetch for consecutive loading with batched CSR densification.
         Falls back to per-item access when not applicable.
         """
+        if _PROFILE_ENABLED:
+            _t_getitems_start = time.perf_counter()
+
         self._ensure_h5_open()
         if not self._use_batched_fetch():
-            return [self.__getitem__(int(i)) for i in indices]
+            result = [self.__getitem__(int(i)) for i in indices]
+            if _PROFILE_ENABLED:
+                _worker_profiler.getitems_time += time.perf_counter() - _t_getitems_start
+                _worker_profiler.call_count += 1
+                if _worker_profiler.call_count % _PROFILE_LOG_INTERVAL == 0:
+                    from torch.utils.data import get_worker_info
+                    wi = get_worker_info()
+                    _worker_profiler.log_and_reset(wi.id if wi else None)
+            return result
 
         idx_arr = np.asarray(indices, dtype=np.int64)
         if idx_arr.size == 0:
@@ -537,6 +598,14 @@ class PerturbationDataset(Dataset):
                     sample[obs_key] = self._fetch_obs_value(file_idx, obs_key)
 
             samples.append(sample)
+
+        if _PROFILE_ENABLED:
+            _worker_profiler.getitems_time += time.perf_counter() - _t_getitems_start
+            _worker_profiler.call_count += 1
+            if _worker_profiler.call_count % _PROFILE_LOG_INTERVAL == 0:
+                from torch.utils.data import get_worker_info
+                wi = get_worker_info()
+                _worker_profiler.log_and_reset(wi.id if wi else None)
 
         return samples
 
@@ -1071,6 +1140,9 @@ class PerturbationDataset(Dataset):
     def _fetch_obsm_expression_batch(
         self, indices: np.ndarray, key: str
     ) -> torch.Tensor:
+        if _PROFILE_ENABLED:
+            _t0 = time.perf_counter()
+
         matrix = self._get_obsm_matrix(key)
         _, n_cols = self._get_matrix_shape(matrix)
         if indices.size == 0:
@@ -1084,6 +1156,9 @@ class PerturbationDataset(Dataset):
             raise TypeError(
                 f"Unsupported obsm storage for key '{key}': {type(matrix).__name__}"
             )
+
+        if _PROFILE_ENABLED:
+            _worker_profiler.obsm_read_time += time.perf_counter() - _t0
 
         return torch.from_numpy(dense)
 
@@ -1102,6 +1177,10 @@ class PerturbationDataset(Dataset):
 
         row_start = int(sorted_rows[start])
         row_end = int(sorted_rows[end - 1])
+
+        if _PROFILE_ENABLED:
+            t0 = time.perf_counter()
+
         indptr_slice = indptr_ds[row_start : row_end + 2]
         base_ptr = int(indptr_slice[0])
         end_ptr = int(indptr_slice[-1])
@@ -1112,6 +1191,10 @@ class PerturbationDataset(Dataset):
         block_data = np.asarray(data_ds[base_ptr:end_ptr], dtype=np.float32)
         block_indices = np.asarray(indices_ds[base_ptr:end_ptr], dtype=np.int64)
 
+        if _PROFILE_ENABLED:
+            t1 = time.perf_counter()
+            _worker_profiler.h5_read_time += t1 - t0
+
         for offset, row in enumerate(sorted_rows[start:end]):
             ptr_start = int(indptr_slice[offset] - base_ptr)
             ptr_end = int(indptr_slice[offset + 1] - base_ptr)
@@ -1120,6 +1203,9 @@ class PerturbationDataset(Dataset):
             dense_sorted[start + offset, block_indices[ptr_start:ptr_end]] = block_data[
                 ptr_start:ptr_end
             ]
+
+        if _PROFILE_ENABLED:
+            _worker_profiler.csr_dense_time += time.perf_counter() - t1
 
     @lru_cache(maxsize=10000)
     def fetch_obsm_expression(self, idx: int, key: str) -> torch.Tensor:
