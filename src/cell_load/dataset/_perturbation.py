@@ -181,6 +181,15 @@ class PerturbationDataset(Dataset):
         self._h5_pid = None
         self._open_h5_file()
 
+        # Detect memmap sidecar for GIL-free I/O
+        mmap_dir = self.h5_path.with_suffix(".mmap")
+        if mmap_dir.is_dir():
+            from ._memmap_store import MemmapStore
+            self._mmap_store = MemmapStore(mmap_dir)
+            logger.info("[%s] Using memmap store: %s", self.name, mmap_dir)
+        else:
+            self._mmap_store = None
+
         # Load cell barcodes if requested
         if self.barcode:
             self.cell_barcodes = self._load_cell_barcodes()
@@ -1090,6 +1099,12 @@ class PerturbationDataset(Dataset):
         if indices.size == 0:
             return torch.empty((0, self.n_genes), dtype=torch.float32)
 
+        # Memmap fast path — GIL-free I/O + numba scatter
+        if self._mmap_store is not None and self._mmap_store.has_csr:
+            dense = self._mmap_store.fetch_csr_batch_dense(indices)
+            dense = self._maybe_downsample_counts_array(dense)
+            return torch.from_numpy(dense)
+
         attrs = dict(self.h5_file["X"].attrs)
         if attrs.get("encoding-type") != "csr_matrix":
             dense = self._fetch_dense_matrix_batch(
@@ -1143,6 +1158,13 @@ class PerturbationDataset(Dataset):
         if _PROFILE_ENABLED:
             _t0 = time.perf_counter()
 
+        # Memmap fast path — GIL-free I/O
+        if self._mmap_store is not None and key in self._mmap_store.obsm_keys:
+            dense = self._mmap_store.fetch_obsm_batch(indices, key)
+            if _PROFILE_ENABLED:
+                _worker_profiler.obsm_read_time += time.perf_counter() - _t0
+            return torch.from_numpy(dense)
+
         matrix = self._get_obsm_matrix(key)
         _, n_cols = self._get_matrix_shape(matrix)
         if indices.size == 0:
@@ -1181,7 +1203,7 @@ class PerturbationDataset(Dataset):
         if _PROFILE_ENABLED:
             t0 = time.perf_counter()
 
-        indptr_slice = indptr_ds[row_start : row_end + 2]
+        indptr_slice = np.asarray(indptr_ds[row_start : row_end + 2], dtype=np.int64)
         base_ptr = int(indptr_slice[0])
         end_ptr = int(indptr_slice[-1])
 
@@ -1189,20 +1211,20 @@ class PerturbationDataset(Dataset):
             return
 
         block_data = np.asarray(data_ds[base_ptr:end_ptr], dtype=np.float32)
-        block_indices = np.asarray(indices_ds[base_ptr:end_ptr], dtype=np.int64)
+        block_indices = np.asarray(indices_ds[base_ptr:end_ptr], dtype=np.int32)
 
         if _PROFILE_ENABLED:
             t1 = time.perf_counter()
             _worker_profiler.h5_read_time += t1 - t0
 
-        for offset, row in enumerate(sorted_rows[start:end]):
-            ptr_start = int(indptr_slice[offset] - base_ptr)
-            ptr_end = int(indptr_slice[offset + 1] - base_ptr)
-            if ptr_end <= ptr_start:
-                continue
-            dense_sorted[start + offset, block_indices[ptr_start:ptr_end]] = block_data[
-                ptr_start:ptr_end
-            ]
+        # Use numba scatter kernel (falls back to Python if numba unavailable)
+        from ._memmap_store import scatter_csr_to_dense
+        run_rows = np.ascontiguousarray(sorted_rows[start:end])
+        run_dense = dense_sorted[start:end]
+        scatter_csr_to_dense(
+            run_rows, indptr_slice, block_data, block_indices,
+            run_dense, row_start, base_ptr,
+        )
 
         if _PROFILE_ENABLED:
             _worker_profiler.csr_dense_time += time.perf_counter() - t1
@@ -1218,6 +1240,11 @@ class PerturbationDataset(Dataset):
         Returns:
             1D FloatTensor of that embedding
         """
+        # Memmap fast path
+        if self._mmap_store is not None and key in self._mmap_store.obsm_keys:
+            row_data = self._mmap_store.fetch_obsm_single(idx, key)
+            return torch.from_numpy(row_data)
+
         matrix = self._get_obsm_matrix(key)
         _, n_cols = self._get_matrix_shape(matrix)
 

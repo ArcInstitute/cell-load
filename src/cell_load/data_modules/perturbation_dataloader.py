@@ -44,6 +44,14 @@ def _worker_init_fn(worker_id: int) -> None:
     except RuntimeError:
         pass
 
+    # Configure logging in spawned workers so _WorkerProfiler messages propagate
+    if os.environ.get("CELL_LOAD_PROFILE", "0") == "1":
+        logging.basicConfig(
+            level=logging.INFO,
+            format=f"%(asctime)s [worker-{worker_id}] %(message)s",
+            force=True,
+        )
+
     worker_info = get_worker_info()
     if worker_info is None:
         return
