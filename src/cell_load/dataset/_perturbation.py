@@ -51,6 +51,7 @@ class PerturbationDataset(Dataset):
         is_log1p: bool = True,
         cell_sentence_len: int | None = None,
         h5_open_kwargs: dict | None = None,
+        collate_dtype: str = "float16",
         **kwargs,
     ):
         """
@@ -78,6 +79,8 @@ class PerturbationDataset(Dataset):
             is_log1p: Whether raw counts in X are log1p-transformed (default True; affects downsampling)
             cell_sentence_len: Optional sentence length for consecutive loading batches
             h5_open_kwargs: Optional kwargs to pass to h5py.File (e.g., rdcc_nbytes)
+            collate_dtype: dtype for tensor outputs — "float16", "float32", or "bfloat16".
+                Casting to float16 before collation halves per-sample memory in workers and pinned memory.
             **kwargs: Additional options (e.g. output_space)
         """
         super().__init__()
@@ -120,6 +123,9 @@ class PerturbationDataset(Dataset):
         self.cell_sentence_len = cell_sentence_len
         self.h5_open_kwargs = self._normalize_h5_open_kwargs(h5_open_kwargs)
         self.additional_obs = self._validate_additional_obs(additional_obs)
+
+        _dtype_map = {"float16": torch.float16, "float32": torch.float32, "bfloat16": torch.bfloat16}
+        self.collate_dtype = _dtype_map.get(collate_dtype, torch.float32)
 
         # Load metadata cache and open file
         self.metadata_cache = GlobalH5MetadataCache().get_cache(
@@ -346,6 +352,12 @@ class PerturbationDataset(Dataset):
             elif self.output_space == "all":
                 sample["ctrl_cell_counts"] = self.fetch_gene_expression(ctrl_idx)
 
+        # Cast tensor values to collate_dtype to reduce worker/pinned memory
+        if self.collate_dtype != torch.float32:
+            for k in ("pert_cell_emb", "ctrl_cell_emb", "pert_cell_counts", "ctrl_cell_counts"):
+                if isinstance(sample.get(k), torch.Tensor):
+                    sample[k] = sample[k].to(self.collate_dtype)
+
         # Optionally include cell barcodes
         if self.barcode and self.cell_barcodes is not None:
             sample["pert_cell_barcode"] = self.cell_barcodes[file_idx]
@@ -482,6 +494,15 @@ class PerturbationDataset(Dataset):
                     )
                 else:
                     ctrl_counts_batch = ctrl_expr_batch
+
+        # Cast batch tensors to collate_dtype to reduce worker/pinned memory
+        if self.collate_dtype != torch.float32:
+            pert_expr_batch = pert_expr_batch.to(self.collate_dtype)
+            ctrl_expr_batch = ctrl_expr_batch.to(self.collate_dtype)
+            if pert_counts_batch is not None:
+                pert_counts_batch = pert_counts_batch.to(self.collate_dtype)
+            if ctrl_counts_batch is not None:
+                ctrl_counts_batch = ctrl_counts_batch.to(self.collate_dtype)
 
         samples = []
         for i, file_idx in enumerate(file_indices):

@@ -88,6 +88,7 @@ class PerturbationDataModule(LightningDataModule):
         use_consecutive_loading: bool = False,
         h5_open_kwargs: dict | None = None,
         show_progress: bool = True,
+        collate_dtype: str = "float16",
         **kwargs,  # missing perturbation_features_file  and store_raw_basal for backwards compatibility
     ):
         """
@@ -195,6 +196,7 @@ class PerturbationDataModule(LightningDataModule):
         self.additional_obs = additional_obs
         self.h5_open_kwargs = h5_open_kwargs
         self.show_progress = bool(show_progress)
+        self.collate_dtype = collate_dtype
         if self.use_consecutive_loading:
             self._set_h5_cache_env_defaults()
 
@@ -305,6 +307,7 @@ class PerturbationDataModule(LightningDataModule):
             "additional_obs": self.additional_obs,
             "use_consecutive_loading": self.use_consecutive_loading,
             "h5_open_kwargs": self.h5_open_kwargs,
+            "collate_dtype": self.collate_dtype,
         }
 
         torch.save(save_dict, filepath)
@@ -349,6 +352,7 @@ class PerturbationDataModule(LightningDataModule):
             "barcode": save_dict.pop("barcode", True),
             "use_consecutive_loading": save_dict.pop("use_consecutive_loading", False),
             "h5_open_kwargs": save_dict.pop("h5_open_kwargs", None),
+            "collate_dtype": save_dict.pop("collate_dtype", "float16"),
         }
 
         # Create new instance with all the saved parameters
@@ -639,6 +643,7 @@ class PerturbationDataModule(LightningDataModule):
             is_log1p=self.is_log1p,
             cell_sentence_len=self.cell_sentence_len,
             h5_open_kwargs=self.h5_open_kwargs,
+            collate_dtype=self.collate_dtype,
         )
 
     def _setup_datasets(self):
