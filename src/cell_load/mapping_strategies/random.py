@@ -276,6 +276,7 @@ class RandomMappingStrategy(BaseMappingStrategy):
         if start + n_samples <= pool_size:
             return np.array(pool[start : start + n_samples], dtype=np.int64)
 
-        tail = pool[start:]
-        head = pool[: n_samples - len(tail)]
-        return np.array(tail + head, dtype=np.int64)
+        # Wrap around the pool as many times as needed
+        pool_arr = np.array(pool, dtype=np.int64)
+        indices = np.arange(start, start + n_samples) % pool_size
+        return pool_arr[indices]
