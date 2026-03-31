@@ -615,6 +615,8 @@ def filter_on_target_knockdown_fast(
         cells_s3       = int(keep_mask.sum())
         perts_removed  = int((drop_pert & (pert_kept_counts > 0)).sum()) if len(kept_col) > 0 else 0
         print(f"[stage 3 (min cells filter)] removed {prev_cells - cells_s3:,} cells | {perts_removed} perturbations")
+        out_perts = len(set(perts.values[keep_mask]) - {control_label})
+        print(f"[output] {cells_s3:,} cells | {out_perts} perturbations (excl. control)")
 
     # ------------------------------------------------------------------
     # 8. Build output
