@@ -76,6 +76,7 @@ class PerturbationDataModule(LightningDataModule):
         ] = "gene",
         downsample: float | None = None,
         downsample_cells: int | None = None,
+        balance_outliers: bool = False,
         is_log1p: bool = True,
         basal_mapping_strategy: Literal["batch", "random"] = "random",
         n_basal_samples: int = 1,
@@ -178,6 +179,7 @@ class PerturbationDataModule(LightningDataModule):
             if downsample_cells <= 0:
                 raise ValueError("downsample_cells must be a positive integer or None.")
             self.downsample_cells = downsample_cells
+        self.balance_outliers = bool(balance_outliers)
         self.is_log1p = bool(is_log1p)
 
         # Sampling and mapping
@@ -483,6 +485,7 @@ class PerturbationDataModule(LightningDataModule):
 
         batch_size = batch_size or (1 if test else self.batch_size)
 
+        is_training = datasets is self.train_datasets
         sampler = PerturbationBatchSampler(
             dataset=ds,
             batch_size=batch_size,
@@ -492,6 +495,7 @@ class PerturbationDataModule(LightningDataModule):
             use_batch=use_batch,
             use_consecutive_loading=self.use_consecutive_loading,
             downsample_cells=self.downsample_cells,
+            balance_outliers=self.balance_outliers if is_training else False,
         )
 
         return DataLoader(
