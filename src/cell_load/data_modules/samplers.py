@@ -35,6 +35,7 @@ class PerturbationBatchSampler(Sampler):
         use_batch: bool = False,
         use_consecutive_loading: bool = False,
         downsample_cells: int | None = None,
+        balance_outliers: bool = False,
         seed: int = 0,
         epoch: int = 0,
     ):
@@ -51,6 +52,7 @@ class PerturbationBatchSampler(Sampler):
         self.test = test
         self.use_batch = use_batch
         self.use_consecutive_loading = use_consecutive_loading
+        self.balance_outliers = balance_outliers
         self.seed = seed
         self.epoch = epoch
 
@@ -87,6 +89,8 @@ class PerturbationBatchSampler(Sampler):
 
         # Create batches using the code-based grouping.
         self.sentences = self._create_sentences()
+        if self.balance_outliers:
+            self._global_pert_codes = self._build_global_pert_codes()
         sentence_lens = [len(sentence) for sentence in self.sentences]
         avg_num = np.mean(sentence_lens)
         std_num = np.std(sentence_lens)
@@ -120,6 +124,9 @@ class PerturbationBatchSampler(Sampler):
 
         else:
             rank_sentences = self.sentences
+
+        if self.balance_outliers:
+            rank_sentences = self._apply_balance_outliers(rank_sentences, self.epoch)
 
         all_batches = []
         current_batch = []
@@ -211,6 +218,66 @@ class PerturbationBatchSampler(Sampler):
                 break
 
         return selected
+
+    def _build_global_pert_codes(self) -> np.ndarray:
+        """Build a flat array mapping global cell index -> pert code."""
+        total_cells = sum(len(subset) for subset in self.dataset.datasets)
+        arr = np.empty(total_cells, dtype=np.int32)
+        offset = 0
+        for subset in self.dataset.datasets:
+            base_dataset = subset.dataset
+            indices = np.array(subset.indices)
+            cache: H5MetadataCache = self.metadata_caches[base_dataset.h5_path]
+            n = len(indices)
+            arr[offset : offset + n] = cache.pert_codes[indices]
+            offset += n
+        return arr
+
+    def _apply_balance_outliers(
+        self, sentences: list[list[int]], epoch: int
+    ) -> list[list[int]]:
+        """Downsample over-represented perturbation conditions to the median
+        sentence count, using a rolling window so all cells are seen over
+        multiple epochs."""
+        if not sentences:
+            return sentences
+
+        pert_codes = np.array(
+            [self._global_pert_codes[s[0]] for s in sentences], dtype=np.int32
+        )
+        unique_codes = np.unique(pert_codes)
+
+        # Group sentence indices by pert code
+        code_to_indices: dict[int, list[int]] = {}
+        for idx, code in enumerate(pert_codes):
+            code_to_indices.setdefault(int(code), []).append(idx)
+
+        counts = np.array([len(code_to_indices[c]) for c in unique_codes])
+        cap = max(1, int(np.median(counts)))
+
+        n_capped = int(np.sum(counts > cap))
+        total_before = int(np.sum(counts))
+        total_after = int(np.sum(np.minimum(counts, cap)))
+        logger.info(
+            f"balance_outliers: cap={cap} (median). "
+            f"{n_capped}/{len(unique_codes)} conditions capped. "
+            f"Sentences: {total_before} -> {total_after} (epoch {epoch})."
+        )
+
+        # Rolling window selection for over-represented conditions
+        selected_indices: list[int] = []
+        for code in unique_codes:
+            indices = code_to_indices[int(code)]
+            n = len(indices)
+            if n <= cap:
+                selected_indices.extend(indices)
+            else:
+                start = (epoch * cap) % n
+                for i in range(cap):
+                    selected_indices.append(indices[(start + i) % n])
+
+        selected_indices.sort()
+        return [sentences[i] for i in selected_indices]
 
     def _get_rank_sentences(self) -> list[list[int]]:
         """
