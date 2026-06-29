@@ -100,6 +100,12 @@ def main():
     )
 
     parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print per-stage cell and perturbation counts during filtering",
+    )
+
+    parser.add_argument(
         "--preprocess",
         action="store_true",
         help="Apply preprocessing as in state paper: normalize to 10k read depth "
@@ -137,6 +143,7 @@ def main():
             min_cells=args.min_cells,
             layer=args.layer,
             var_gene_name=args.var_gene_name,
+            verbose=args.verbose,
         )
 
         print(
