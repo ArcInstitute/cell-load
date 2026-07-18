@@ -9,6 +9,7 @@ import scipy.sparse as sp
 import torch
 
 from .singleton import Singleton
+from .scx import is_scx_path, open_scx_anndata
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,39 @@ class H5MetadataCache:
             batch_col: obs column name for batch/plate
         """
         self.h5_path = h5_path
+        if is_scx_path(h5_path):
+            adata = open_scx_anndata(h5_path)
+            obs = adata.obs
+
+            pert = pd.Categorical(obs[pert_col])
+            cell_type = pd.Categorical(obs[cell_type_key])
+            batch = pd.Categorical(obs[batch_col])
+
+            self.pert_categories = safe_decode_array(pert.categories)
+            self.cell_type_categories = safe_decode_array(cell_type.categories)
+            self.batch_is_categorical = isinstance(
+                obs[batch_col].dtype, pd.CategoricalDtype
+            )
+            self.batch_categories = safe_decode_array(batch.categories)
+            self.pert_codes = pert.codes.astype(np.int32)
+            self.cell_type_codes = cell_type.codes.astype(np.int32)
+            self.batch_codes = batch.codes.astype(np.int32)
+        else:
+            self._load_h5_metadata(h5_path, pert_col, cell_type_key, batch_col)
+
+        # -- Control mask & counts --
+        idx = np.where(self.pert_categories == control_pert)[0]
+        if idx.size == 0:
+            raise ValueError(
+                f"control_pert='{control_pert}' not found in {pert_col} categories"
+            )
+        self.control_pert_code = int(idx[0])
+        self.control_mask = self.pert_codes == self.control_pert_code
+        self.n_cells = len(self.pert_codes)
+
+    def _load_h5_metadata(
+        self, h5_path: str, pert_col: str, cell_type_key: str, batch_col: str
+    ) -> None:
         with h5py.File(h5_path, "r") as f:
             obs = f["obs"]
 
@@ -61,17 +95,6 @@ class H5MetadataCache:
             # -- Codes for pert & cell type --
             self.pert_codes = obs[pert_col]["codes"][:].astype(np.int32)
             self.cell_type_codes = obs[cell_type_key]["codes"][:].astype(np.int32)
-
-            # -- Control mask & counts --
-            idx = np.where(self.pert_categories == control_pert)[0]
-            if idx.size == 0:
-                raise ValueError(
-                    f"control_pert='{control_pert}' not found in {pert_col} categories"
-                )
-            self.control_pert_code = int(idx[0])
-            self.control_mask = self.pert_codes == self.control_pert_code
-
-            self.n_cells = len(self.pert_codes)
 
     def get_batch_names(self, indices: np.ndarray) -> np.ndarray:
         """Return batch labels for the provided cell indices."""

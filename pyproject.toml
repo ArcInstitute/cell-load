@@ -12,7 +12,14 @@ authors = [
     { name = "Beatrice Bevilacqua", email = "beatrice.bevilacqua@arcinstitute.org" },
 ]
 requires-python = ">=3.10,<3.13"
-dependencies = ["torch>=1.13.0", "anndata>=0.9.1", "lightning>=2.0.0", "toml>=0.10.2", "scanpy>=1.9.0"]
+dependencies = [
+    "torch>=1.13.0",
+    "anndata>=0.9.1",
+    "lightning>=2.0.0",
+    "toml>=0.10.2",
+    "scanpy>=1.9.0",
+    "pyscx @ git+https://github.com/ArcInstitute/scx.git@pyscx-v0.11.0#subdirectory=pyscx ; python_version >= '3.11'",
+]
 
 [build-system]
 requires = ["hatchling"]

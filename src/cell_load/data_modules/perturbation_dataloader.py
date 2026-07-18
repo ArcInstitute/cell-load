@@ -20,8 +20,8 @@ from ..mapping_strategies import BatchMappingStrategy, RandomMappingStrategy
 from ..utils.data_utils import (
     GlobalH5MetadataCache,
     generate_onehot_map,
-    safe_decode_array,
 )
+from ..utils.scx import is_scx_path, open_scx_anndata
 from .samplers import PerturbationBatchSampler
 
 logger = logging.getLogger(__name__)
@@ -508,35 +508,32 @@ class PerturbationDataModule(LightningDataModule):
             dataset_path = Path(self.config.datasets[dataset_name])
             files = self._find_dataset_files(dataset_path)
             for _fname, fpath in files.items():
-                with h5py.File(fpath, "r") as f:
-                    uns = f.get("uns")
-                    has_log1p = uns is not None and "log1p" in uns
-                    if has_log1p:
-                        seen_log1p = True
-                        if log1p_example is None:
-                            log1p_example = str(fpath)
-                    else:
-                        seen_no_log1p = True
-                        if no_log1p_example is None:
-                            no_log1p_example = str(fpath)
+                if is_scx_path(fpath):
+                    has_log1p = "log1p" in open_scx_anndata(fpath).uns
+                else:
+                    with h5py.File(fpath, "r") as f:
+                        uns = f.get("uns")
+                        has_log1p = uns is not None and "log1p" in uns
 
-                    pert_arr = f[f"obs/{self.pert_col}/categories"][:]
-                    perts = set(safe_decode_array(pert_arr))
-                    all_perts.update(perts)
+                if has_log1p:
+                    seen_log1p = True
+                    if log1p_example is None:
+                        log1p_example = str(fpath)
+                else:
+                    seen_no_log1p = True
+                    if no_log1p_example is None:
+                        no_log1p_example = str(fpath)
 
-                    try:
-                        batch_arr = f[f"obs/{self.batch_col}/categories"][:]
-                    except KeyError:
-                        batch_arr = f[f"obs/{self.batch_col}"][:]
-                    batches = set(safe_decode_array(batch_arr))
-                    all_batches.update(batches)
-
-                    try:
-                        celltype_arr = f[f"obs/{self.cell_type_key}/categories"][:]
-                    except KeyError:
-                        celltype_arr = f[f"obs/{self.cell_type_key}"][:]
-                    celltypes = set(safe_decode_array(celltype_arr))
-                    all_celltypes.update(celltypes)
+                cache = GlobalH5MetadataCache().get_cache(
+                    str(fpath),
+                    self.pert_col,
+                    self.cell_type_key,
+                    self.control_pert,
+                    self.batch_col,
+                )
+                all_perts.update(cache.pert_categories)
+                all_batches.update(cache.batch_categories)
+                all_celltypes.update(cache.cell_type_categories)
 
         if self.output_space == "all" and seen_log1p and seen_no_log1p:
             raise ValueError(
@@ -831,25 +828,25 @@ class PerturbationDataModule(LightningDataModule):
             for pattern in expanded_patterns:
                 if pattern.startswith("/"):
                     # Absolute path - use glob.glob()
-                    if pattern.endswith((".h5", ".h5ad")):
+                    if pattern.endswith((".h5", ".h5ad", ".scx")):
                         # Pattern already specifies file extension
                         for fpath_str in sorted(glob.glob(pattern)):
                             fpath = Path(fpath_str)
                             files[fpath.stem] = fpath
                     else:
                         # Pattern doesn't specify extension, add file patterns
-                        for ext in ("*.h5", "*.h5ad"):
+                        for ext in ("*.h5", "*.h5ad", "*.scx"):
                             full_pattern = f"{pattern.rstrip('/')}/{ext}"
                             for fpath_str in sorted(glob.glob(full_pattern)):
                                 fpath = Path(fpath_str)
                                 files[fpath.stem] = fpath
                 else:
                     # Relative path - use Path.glob()
-                    if pattern.endswith((".h5", ".h5ad")):
+                    if pattern.endswith((".h5", ".h5ad", ".scx")):
                         for fpath in sorted(Path().glob(pattern)):
                             files[fpath.stem] = fpath
                     else:
-                        for ext in ("*.h5", "*.h5ad"):
+                        for ext in ("*.h5", "*.h5ad", "*.scx"):
                             full_pattern = f"{pattern.rstrip('/')}/{ext}"
                             for fpath in sorted(Path().glob(full_pattern)):
                                 files[fpath.stem] = fpath
@@ -860,7 +857,7 @@ class PerturbationDataModule(LightningDataModule):
                 files[dataset_path.stem] = dataset_path
             else:
                 # Directory - search for files
-                for ext in ("*.h5", "*.h5ad"):
+                for ext in ("*.h5", "*.h5ad", "*.scx"):
                     for fpath in sorted(dataset_path.glob(ext)):
                         files[fpath.stem] = fpath
 

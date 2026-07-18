@@ -15,6 +15,7 @@ from ..utils.data_utils import (
     suspected_discrete_torch,
     suspected_log_torch,
 )
+from ..utils.scx import is_scx_path, open_scx_anndata
 
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,7 @@ class PerturbationDataset(Dataset):
         super().__init__()
         self.name = name
         self.h5_path = Path(h5_path)
+        self._is_scx = is_scx_path(self.h5_path)
         self.rng = np.random.default_rng(random_state)
         self.mapping_strategy = mapping_strategy
         self.pert_onehot_map = pert_onehot_map
@@ -222,15 +224,17 @@ class PerturbationDataset(Dataset):
                 self.h5_file.close()
             except Exception:
                 pass
-        self.h5_file = h5py.File(self.h5_path, "r", **self.h5_open_kwargs)
+        if self._is_scx:
+            self.h5_file = open_scx_anndata(self.h5_path)
+        else:
+            self.h5_file = h5py.File(self.h5_path, "r", **self.h5_open_kwargs)
         self._h5_pid = os.getpid()
 
     def _ensure_h5_open(self) -> None:
-        if (
-            self.h5_file is None
-            or self._h5_pid != os.getpid()
-            or not self.h5_file.id.valid
-        ):
+        is_closed = (
+            not self._is_scx and self.h5_file is not None and not self.h5_file.id.valid
+        )
+        if self.h5_file is None or self._h5_pid != os.getpid() or is_closed:
             self._open_h5_file()
 
     def ensure_h5_open(self) -> None:
@@ -571,6 +575,11 @@ class PerturbationDataset(Dataset):
         return obs_list
 
     def _fetch_obs_value(self, idx: int, key: str):
+        if self._is_scx:
+            if key not in self.h5_file.obs:
+                raise KeyError(f"obs/{key} not found in {self.h5_path}")
+            return self._decode_obs_value(self.h5_file.obs[key].iloc[idx])
+
         obs = self.h5_file["obs"]
         if key not in obs:
             raise KeyError(f"obs/{key} not found in {self.h5_path}")
@@ -728,6 +737,9 @@ class PerturbationDataset(Dataset):
         Returns:
             1D FloatTensor of length self.n_genes
         """
+        if self._is_scx:
+            return torch.from_numpy(self._matrix_to_dense(self.h5_file.X[idx]))
+
         attrs = dict(self.h5_file["X"].attrs)
         if attrs["encoding-type"] == "csr_matrix":
             indptr = self.h5_file["/X/indptr"]
@@ -817,6 +829,9 @@ class PerturbationDataset(Dataset):
         """
         Fetch raw gene counts for a given cell index, applying optional downsampling.
         """
+        if self._is_scx:
+            return self._maybe_downsample_counts(self._fetch_gene_expression_raw(idx))
+
         attrs = dict(self.h5_file["X"].attrs)
         if (
             attrs.get("encoding-type") == "csr_matrix"
@@ -886,6 +901,13 @@ class PerturbationDataset(Dataset):
             or all(k in obj for k in ("data", "indices", "indptr"))
         )
 
+    @staticmethod
+    def _matrix_to_dense(matrix) -> np.ndarray:
+        if hasattr(matrix, "toarray"):
+            matrix = matrix.toarray()
+        dense = np.asarray(matrix, dtype=np.float32)
+        return dense.reshape(-1) if dense.ndim == 2 and dense.shape[0] == 1 else dense
+
     def _infer_n_cols_from_indices(self, indices_ds) -> int:
         # Rare fallback for malformed files that omit CSR shape metadata.
         total_nnz = int(indices_ds.shape[0])
@@ -905,6 +927,11 @@ class PerturbationDataset(Dataset):
         return max_col + 1
 
     def _get_matrix_shape(self, matrix_obj) -> tuple[int, int]:
+        if self._is_scx and hasattr(matrix_obj, "shape"):
+            if len(matrix_obj.shape) == 1:
+                return int(matrix_obj.shape[0]), 1
+            return int(matrix_obj.shape[0]), int(matrix_obj.shape[1])
+
         if isinstance(matrix_obj, h5py.Dataset):
             if len(matrix_obj.shape) == 1:
                 return int(matrix_obj.shape[0]), 1
@@ -1005,6 +1032,11 @@ class PerturbationDataset(Dataset):
         return dense
 
     def _get_obsm_matrix(self, key: str):
+        if self._is_scx:
+            if key not in self.h5_file.obsm:
+                raise KeyError(f"obsm key '{key}' not found in {self.h5_path}")
+            return self.h5_file.obsm[key]
+
         path = f"/obsm/{key}"
         if path not in self.h5_file:
             raise KeyError(f"obsm key '{key}' not found in {self.h5_path}")
@@ -1016,6 +1048,11 @@ class PerturbationDataset(Dataset):
         """
         if indices.size == 0:
             return torch.empty((0, self.n_genes), dtype=torch.float32)
+
+        if self._is_scx:
+            dense = self._matrix_to_dense(self.h5_file.X[indices])
+            dense = self._maybe_downsample_counts_array(dense)
+            return torch.from_numpy(dense)
 
         attrs = dict(self.h5_file["X"].attrs)
         if attrs.get("encoding-type") != "csr_matrix":
@@ -1072,7 +1109,9 @@ class PerturbationDataset(Dataset):
         if indices.size == 0:
             return torch.empty((0, n_cols), dtype=torch.float32)
 
-        if isinstance(matrix, h5py.Dataset):
+        if self._is_scx:
+            dense = self._matrix_to_dense(matrix[indices])
+        elif isinstance(matrix, h5py.Dataset):
             dense = self._fetch_dense_matrix_batch(matrix, indices, n_cols)
         elif self._is_csr_group(matrix):
             dense = self._fetch_csr_matrix_batch(matrix, indices, n_cols)
@@ -1131,6 +1170,9 @@ class PerturbationDataset(Dataset):
         matrix = self._get_obsm_matrix(key)
         _, n_cols = self._get_matrix_shape(matrix)
 
+        if self._is_scx:
+            return torch.from_numpy(self._matrix_to_dense(matrix[idx]))
+
         if isinstance(matrix, h5py.Dataset):
             row_data = np.asarray(matrix[idx], dtype=np.float32)
             if row_data.ndim == 0:
@@ -1159,6 +1201,23 @@ class PerturbationDataset(Dataset):
 
         def _decode(x):
             return x.decode("utf-8") if isinstance(x, (bytes, bytearray)) else str(x)
+
+        if self._is_scx:
+            var = self.h5_file.var
+            if "gene_name" in var:
+                raw = var["gene_name"].astype(str).to_numpy()
+            elif "gene_name_index" in var:
+                raw = var["gene_name_index"].astype(str).to_numpy()
+            elif "feature" in var:
+                raw = var["feature"].astype(str).to_numpy()
+            else:
+                raw = self.h5_file.var_names.astype(str).to_numpy()
+
+            if output_space == "gene" and "highly_variable" in var:
+                raw = raw[var["highly_variable"].to_numpy(dtype=bool)]
+            elif output_space == "gene" and "hvg_names" in self.h5_file.uns:
+                raw = np.asarray(self.h5_file.uns["hvg_names"], dtype=str)
+            return raw.tolist()
 
         try:
             if (
@@ -1416,6 +1475,9 @@ class PerturbationDataset(Dataset):
 
     def _get_num_genes(self) -> int:
         """Return the number of genes in the X matrix."""
+        if self._is_scx:
+            return int(self.h5_file.n_vars)
+
         try:
             # Try to get shape directly from metadata
             n_cols = self.h5_file["X"].attrs["shape"][1]
@@ -1434,6 +1496,11 @@ class PerturbationDataset(Dataset):
 
     def get_num_hvgs(self) -> int:
         """Return the number of highly variable genes in the obsm matrix."""
+        if self._is_scx:
+            if "X_hvg" not in self.h5_file.obsm:
+                return 0
+            return self._get_matrix_shape(self.h5_file.obsm["X_hvg"])[1]
+
         try:
             return self._get_matrix_shape(self.h5_file["obsm/X_hvg"])[1]
         except Exception:
@@ -1441,6 +1508,9 @@ class PerturbationDataset(Dataset):
 
     def _get_num_cells(self) -> int:
         """Return the total number of cells in the file."""
+        if self._is_scx:
+            return int(self.h5_file.n_obs)
+
         try:
             n_rows = self.h5_file["X"].shape[0]
         except Exception:
@@ -1507,6 +1577,9 @@ class PerturbationDataset(Dataset):
         Returns:
             np.ndarray: Array of cell barcode strings
         """
+        if self._is_scx:
+            return self.h5_file.obs_names.astype(str).to_numpy()
+
         try:
             # Try to load from obs/_index (AnnData's default storage for obs index)
             barcodes = self.h5_file["obs/_index"][:]
