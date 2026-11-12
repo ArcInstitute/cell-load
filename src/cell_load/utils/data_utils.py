@@ -114,6 +114,31 @@ class GlobalH5MetadataCache(metaclass=Singleton):
         return self._cache[h5_path]
 
 
+def read_h5_column(node) -> np.ndarray:
+    """
+    Read a 1-D string column (obs/var index or a string column) from an h5ad.
+
+    Older anndata/pandas write string columns as a plain dataset. anndata >= 0.11
+    with pandas >= 3 (whose default string dtype is nullable) writes them as a
+    ``nullable-string-array`` group holding ``values`` and ``mask`` datasets.
+    Entries flagged in ``mask`` are missing; their slot in ``values`` is
+    returned as stored.
+
+    Args:
+        node: h5py Dataset or Group for the column
+    Returns:
+        np.ndarray: the stored values
+    """
+    if isinstance(node, h5py.Group):
+        encoding = node.attrs.get("encoding-type")
+        if encoding == "nullable-string-array":
+            return node["values"][:]
+        raise ValueError(
+            f"{node.name} is a group with unsupported encoding {encoding!r}"
+        )
+    return node[:]
+
+
 def safe_decode_array(arr) -> np.ndarray:
     """
     Decode any byte-strings in `arr` to UTF-8 and cast all entries to Python str.
