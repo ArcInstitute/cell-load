@@ -1,5 +1,6 @@
 import h5py
 import numpy as np
+import pytest
 
 from cell_load.utils.data_utils import read_h5_column, safe_decode_array
 
@@ -81,3 +82,91 @@ def test_dataset_reads_string_index_and_gene_names(tmp_path):
 
     assert dataset.get_gene_names() == ["g0", "g1", "g2"]
     assert dataset._load_cell_barcodes().tolist() == [f"c{i}" for i in range(8)]
+
+
+def _write_nullable_strings(adata, path, **kwargs):
+    import anndata as ad
+    import pytest
+
+    if not hasattr(ad.settings, "allow_write_nullable_strings"):
+        pytest.skip("anndata < 0.11 cannot write nullable string arrays")
+    with ad.settings.override(allow_write_nullable_strings=True):
+        adata.write_h5ad(path, **kwargs)
+
+
+def test_metadata_cache_reads_string_batch_column(tmp_path):
+    """A non-categorical string batch column loads instead of raising TypeError."""
+    import anndata as ad
+    import pandas as pd
+
+    from cell_load.utils.data_utils import H5MetadataCache
+
+    obs = pd.DataFrame(
+        {
+            "gene": pd.Categorical(["ctrl"] * 2 + ["g0"] * 2),
+            "cell_type": pd.Categorical(["A"] * 4),
+            "batch": pd.array(["b1", "b2", "b1", "b2"], dtype="string"),
+        },
+        index=[f"c{i}" for i in range(4)],
+    )
+    path = tmp_path / "batch.h5ad"
+    _write_nullable_strings(
+        ad.AnnData(np.ones((4, 2), dtype=np.float32), obs=obs),
+        path,
+        convert_strings_to_categoricals=False,
+    )
+    with h5py.File(path, "r") as f:
+        assert isinstance(f["obs/batch"], h5py.Group)
+        assert "categories" not in f["obs/batch"]
+
+    cache = H5MetadataCache(
+        str(path),
+        pert_col="gene",
+        cell_type_key="cell_type",
+        control_pert="ctrl",
+        batch_col="batch",
+    )
+
+    assert cache.batch_categories.tolist() == ["b1", "b2"]
+    assert cache.batch_codes.tolist() == [0, 1, 0, 1]
+
+
+def test_read_h5_column_categorical(tmp_path):
+    path = tmp_path / "categorical.h5"
+    with h5py.File(path, "w") as f:
+        group = f.create_group("var/_index")
+        group.attrs["encoding-type"] = "categorical"
+        group.create_dataset("categories", data=np.array([b"g0", b"g1"]))
+        group.create_dataset("codes", data=np.array([1, 0], dtype=np.int8))
+        bad = f.create_group("var/with_na")
+        bad.attrs["encoding-type"] = "categorical"
+        bad.create_dataset("categories", data=np.array([b"g0"]))
+        bad.create_dataset("codes", data=np.array([0, -1], dtype=np.int8))
+
+    with h5py.File(path, "r") as f:
+        assert safe_decode_array(read_h5_column(f["var/_index"])).tolist() == [
+            "g1",
+            "g0",
+        ]
+        with pytest.raises(ValueError, match="missing values"):
+            read_h5_column(f["var/with_na"])
+
+
+def test_categorical_obs_index_loads_barcodes(tmp_path):
+    """A categorical obs/_index is decoded instead of raising."""
+    from types import SimpleNamespace
+
+    from cell_load.dataset._perturbation import PerturbationDataset
+
+    path = tmp_path / "categorical.h5"
+    with h5py.File(path, "w") as f:
+        group = f.create_group("obs/_index")
+        group.attrs["encoding-type"] = "categorical"
+        group.create_dataset("categories", data=np.array([b"c0", b"c1"]))
+        group.create_dataset("codes", data=np.array([1, 0, 1], dtype=np.int8))
+
+    with h5py.File(path, "r") as f:
+        stub = SimpleNamespace(h5_file=f, h5_path=path)
+        barcodes = PerturbationDataset._load_cell_barcodes(stub)
+
+    assert barcodes.tolist() == ["c1", "c0", "c1"]
