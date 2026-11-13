@@ -52,7 +52,7 @@ class H5MetadataCache:
                 self.batch_codes = batch_ds["codes"][:].astype(np.int32)
             else:
                 self.batch_is_categorical = False
-                raw = batch_ds[:]
+                raw = read_h5_column(batch_ds)
                 # Get unique values and create proper categories/codes mapping
                 unique_values, inverse_indices = np.unique(raw, return_inverse=True)
                 self.batch_categories = unique_values.astype(str)
@@ -112,6 +112,37 @@ class GlobalH5MetadataCache(metaclass=Singleton):
                 h5_path, pert_col, cell_type_key, control_pert, batch_col
             )
         return self._cache[h5_path]
+
+
+def read_h5_column(node) -> np.ndarray:
+    """
+    Read a 1-D string column (obs/var index or a string column) from an h5ad.
+
+    Older anndata/pandas write string columns as a plain dataset. anndata >= 0.11
+    with pandas >= 3 (whose default string dtype is nullable) writes them as a
+    ``nullable-string-array`` group holding ``values`` and ``mask`` datasets.
+    Entries flagged in ``mask`` are missing; their slot in ``values`` is
+    returned as stored. A ``categorical`` group is expanded to
+    ``categories[codes]``.
+
+    Args:
+        node: h5py Dataset or Group for the column
+    Returns:
+        np.ndarray: the stored values
+    """
+    if isinstance(node, h5py.Group):
+        encoding = node.attrs.get("encoding-type")
+        if encoding == "nullable-string-array":
+            return node["values"][:]
+        if encoding == "categorical":
+            codes = node["codes"][:]
+            if (codes < 0).any():
+                raise ValueError(f"{node.name} has missing values (code -1)")
+            return node["categories"][:][codes]
+        raise ValueError(
+            f"{node.name} is a group with unsupported encoding {encoding!r}"
+        )
+    return node[:]
 
 
 def safe_decode_array(arr) -> np.ndarray:

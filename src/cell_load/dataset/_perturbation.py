@@ -11,6 +11,7 @@ from torch.utils.data import Dataset, Subset
 from ..mapping_strategies import BaseMappingStrategy
 from ..utils.data_utils import (
     GlobalH5MetadataCache,
+    read_h5_column,
     safe_decode_array,
     suspected_discrete_torch,
     suspected_log_torch,
@@ -1170,9 +1171,9 @@ class PerturbationDataset(Dataset):
                 raw = gene_categories[gene_codes]
             else:
                 try:
-                    raw = self.h5_file["var/gene_name"][:]
+                    raw = read_h5_column(self.h5_file["var/gene_name"])
                 except KeyError:
-                    raw = self.h5_file["var/gene_name_index"][:]
+                    raw = read_h5_column(self.h5_file["var/gene_name_index"])
             if (
                 output_space == "gene"
                 and "highly_variable" in self.h5_file["/var"].keys()
@@ -1200,9 +1201,9 @@ class PerturbationDataset(Dataset):
             except KeyError:
                 # Try var/_index, then var/feature as final fallbacks
                 try:
-                    fallback = self.h5_file["var/_index"][:]
+                    fallback = read_h5_column(self.h5_file["var/_index"])
                 except KeyError:
-                    fallback = self.h5_file["var/feature"][:]
+                    fallback = read_h5_column(self.h5_file["var/feature"])
                 if (
                     output_space == "gene"
                     and "highly_variable" in self.h5_file["/var"].keys()
@@ -1509,7 +1510,7 @@ class PerturbationDataset(Dataset):
         """
         try:
             # Try to load from obs/_index (AnnData's default storage for obs index)
-            barcodes = self.h5_file["obs/_index"][:]
+            barcodes = read_h5_column(self.h5_file["obs/_index"])
             # Decode bytes to strings if necessary
             decoded_barcodes = []
             for barcode in barcodes:
